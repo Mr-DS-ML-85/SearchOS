@@ -3,7 +3,9 @@
 Run:  python tools/gen_badges.py  ->  docs/assets/badges/*.svg
 
 Each badge is a self-contained SVG (no external assets) so it renders on GitHub
-READMEs and the landing page without any badge service.
+READMEs and the landing page without any badge service. Text widths are measured
+against a real font (fontTools, falling back to a character-class table) so
+labels never overlap the value segment and values never truncate.
 """
 
 from __future__ import annotations
@@ -47,28 +49,64 @@ BADGES = [
 
 FONT = 'font-family="Inter, -apple-system, \'Segoe UI\', Roboto, sans-serif"'
 
+# Layout constants (px at 28px badge height).
+ICON_X, ICON_SIZE = 10, 14
+ICON_TO_TEXT = 8
+LABEL_PAD_R = 12
+VALUE_PAD_L = 14
+VALUE_PAD_R = 12
 
-def _width(label: str, value: str) -> float:
-    label_w = 10 + 14 + 6 + len(label) * 6.8  # pad + icon + gap + text
-    value_w = 10 + len(value) * 7.2
-    return label_w + value_w
+
+def _measure(s: str, size: float) -> float:
+    """Measure text width in px using real font metrics when possible.
+
+    Prefers DejaVu Sans Bold (close to the Inter fallback used at render time)
+    via fontTools; falls back to a character-class advance table otherwise.
+    """
+    try:
+        from fontTools.ttLib import TTFont
+
+        path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        f = TTFont(path)
+        cmap = f.getBestCmap()
+        hmtx = f["hmtx"]
+        upm = f["head"].unitsPerEm
+        w = 0.0
+        for ch in s:
+            cp = ord(ch)
+            adv = hmtx[cmap[cp]][0] if cp in cmap else hmtx[0x20][0]
+            w += adv / upm * size
+        return w
+    except Exception:
+        # fallback: per-character advance classes at 1em
+        classes = {
+            "W": 1.0, "M": 0.96, "@": 0.9, "g": 0.76, "d": 0.74, "A": 0.72,
+            "e": 0.66, "S": 0.66, "o": 0.65, "a": 0.62, "n": 0.62, "r": 0.5,
+            "i": 0.3, "l": 0.32, ".": 0.25, " ": 0.28, "+": 0.66,
+        }
+        default = 0.58
+        return sum(classes.get(ch, default) for ch in s) * size
 
 
 def badge(slug: str, icon: str, label: str, value: str, accent: str) -> str:
-    label_w = 10 + 14 + 6 + len(label) * 6.8
-    value_w = 10 + len(value) * 7.2
+    label_w = ICON_X + ICON_SIZE + ICON_TO_TEXT + _measure(label, 12) + LABEL_PAD_R
+    value_w = VALUE_PAD_L + _measure(value, 12.5) + VALUE_PAD_R
     w = label_w + value_w
+    icon_cx = ICON_X + ICON_SIZE / 2
+    icon_cy = 14
     glyph = ICONS[icon]
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="28" viewBox="0 0 {w:.0f} 28" role="img">
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{w:.1f}" height="28" viewBox="0 0 {w:.1f} 28" role="img">
   <title>{label} · {value}</title>
-  <rect width="{w:.0f}" height="28" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
-  <rect x="0" y="0" width="{label_w:.0f}" height="28" rx="14" fill="#0f172a"/>
-  <rect x="{label_w:.0f}" y="0" width="{value_w:.0f}" height="28" rx="14" fill="{accent}"/>
-  <g transform="translate(10,7) scale(0.5833)" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" color="#cbd5e1">
+  <rect width="{w:.1f}" height="28" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <rect x="0" y="0" width="{label_w:.1f}" height="28" rx="14" fill="#0f172a"/>
+  <rect x="{label_w:.1f}" y="0" width="{value_w:.1f}" height="28" rx="14" fill="{accent}"/>
+  <g transform="translate({icon_cx:.1f} {icon_cy:.1f}) scale(0.5833) translate(-12 -12)" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" color="#cbd5e1">
       {glyph}
   </g>
-  <text x="31" y="18" font-size="12" font-weight="600" fill="#e2e8f0" {FONT}>{label}</text>
-  <text x="{label_w + 10:.0f}" y="18" font-size="12.5" font-weight="700" fill="#ffffff" {FONT}>{value}</text>
+  <text x="{ICON_X + ICON_SIZE + ICON_TO_TEXT}" y="18.5" font-size="12" font-weight="600" fill="#e2e8f0" {FONT}>{label}</text>
+  <text x="{label_w + VALUE_PAD_L:.1f}" y="18.5" font-size="12.5" font-weight="700" fill="#ffffff" {FONT}>{value}</text>
 </svg>"""
 
 

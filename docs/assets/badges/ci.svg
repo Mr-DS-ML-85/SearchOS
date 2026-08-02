@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="139" height="28" viewBox="0 0 139 28" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="177.8" height="28" viewBox="0 0 177.8 28" role="img">
   <title>Tests · 34 passed</title>
-  <rect width="139" height="28" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
-  <rect x="0" y="0" width="64" height="28" rx="14" fill="#0f172a"/>
-  <rect x="64" y="0" width="75" height="28" rx="14" fill="#475569"/>
-  <g transform="translate(10,7) scale(0.5833)" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" color="#cbd5e1">
+  <rect width="177.8" height="28" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <rect x="0" y="0" width="80.3" height="28" rx="14" fill="#0f172a"/>
+  <rect x="80.3" y="0" width="97.4" height="28" rx="14" fill="#475569"/>
+  <g transform="translate(17.0 14.0) scale(0.5833) translate(-12 -12)" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" color="#cbd5e1">
       <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
   </g>
-  <text x="31" y="18" font-size="12" font-weight="600" fill="#e2e8f0" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">Tests</text>
-  <text x="74" y="18" font-size="12.5" font-weight="700" fill="#ffffff" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">34 passed</text>
+  <text x="32" y="18.5" font-size="12" font-weight="600" fill="#e2e8f0" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">Tests</text>
+  <text x="94.3" y="18.5" font-size="12.5" font-weight="700" fill="#ffffff" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">34 passed</text>
 </svg>
