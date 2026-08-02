@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <a href="https://Mr-DS-ML-85.github.io/SearchOS/"><b>Landing page</b></a> ·
+  <a href="https://searchos.devforge.qzz.io"><b>Landing page</b></a> ·
   <a href="docs/getting-started.md">Getting started</a> ·
   <a href="docs/architecture.md">Architecture</a> ·
   <a href="docs/api.md">API reference</a> ·
