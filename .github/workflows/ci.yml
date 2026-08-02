@@ -50,6 +50,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Create .env with test keys
+        run: |
+          echo "BOOTSTRAP_ADMIN_API_KEY=sk_ci_test_only_${{ github.run_id }}_not_a_real_key" >> .env
+
       - name: Build gateway image
         run: docker compose build gateway
 
