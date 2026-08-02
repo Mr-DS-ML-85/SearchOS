@@ -1,0 +1,12 @@
+use_default_settings: true
+
+server:
+  secret_key: "searchos-local-searxng-secret-change-me"
+  limiter: false
+  public_instance: false
+  base_url: http://localhost:8080/
+
+search:
+  formats:
+    - html
+    - json
