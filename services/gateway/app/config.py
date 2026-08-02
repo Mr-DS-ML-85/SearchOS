@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     searxng_url: str = ""
     searxng_timeout_seconds: float = 12.0
     searxng_local_ttl_seconds: int = 3600
+    searxng_local_min_hits: int = 3
 
     local_index_enabled: bool = True
     local_index_fts_weight: float = 0.6

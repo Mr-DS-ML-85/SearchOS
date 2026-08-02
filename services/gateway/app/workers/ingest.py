@@ -10,6 +10,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.embed.chunker import chunk_text, estimate_tokens
@@ -77,7 +78,9 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
 
         async with session_factory() as session:
             existing = await session.scalar(
-                select(Document).where(Document.normalized_url == doc.normalized_url)
+                select(Document)
+                .where(Document.normalized_url == doc.normalized_url)
+                .options(selectinload(Document.chunks))
             )
             if existing:
                 for chunk in existing.chunks:
@@ -87,6 +90,7 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
                 existing.content_hash = doc.content_hash
                 existing.lang = doc.lang
                 existing.status = "indexed"
+                existing.fetched_at = doc.fetched_at
                 doc = existing
             else:
                 session.add(doc)
@@ -315,6 +319,7 @@ async def _enqueue_stale_documents(session_factory: async_sessionmaker) -> None:
                 await session.execute(
                     select(Document.url)
                     .where(Document.status == "indexed", Document.fetched_at < cutoff)
+                    .order_by(Document.fetched_at.asc())
                     .limit(settings.crawler_recrawl_batch)
                 )
             ).scalars().all()

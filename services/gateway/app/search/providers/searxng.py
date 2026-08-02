@@ -4,19 +4,22 @@ import json
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import get_settings
+from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.workers.ingest import normalize_url
 
 SNIPPET_META_FLAG = "searxng_snippet"
+
+logger = get_logger("search.providers.searxng")
 
 
 class SearXNGProvider(SearchProvider):
@@ -92,7 +95,8 @@ class SearXNGProvider(SearchProvider):
         if result.results:
             try:
                 await self._persist(raw_results[: query.num_results])
-            except Exception:
+            except Exception as e:
+                logger.warning("searxng persist failed: %s", e)
                 get_metrics().provider_errors.labels(provider=self.name, kind="persist").inc()
 
         result.latency_ms = (time.monotonic() - start) * 1000
@@ -113,7 +117,7 @@ class SearXNGProvider(SearchProvider):
                     "title": item.get("title") or url,
                     "content": (item.get("content") or "")[:300],
                     "lang": item.get("language") or None,
-                    "published": (item.get("publishedDate") or item.get("published_date")) or None,
+                    "published": self._parse_dt(item.get("publishedDate") or item.get("published_date")),
                     "meta": json.dumps({"searxng_snippet": True, "engine": item.get("engine")}),
                 }
             )
@@ -123,7 +127,7 @@ class SearXNGProvider(SearchProvider):
             """
             INSERT INTO documents (id, url, normalized_url, title, content_text, lang, source,
                                    published_at, fetched_at, status, meta)
-            VALUES (:id, :url, :norm, :title, :content, :lang, 'web', :published, now(), 'indexed', :meta::jsonb)
+            VALUES (:id, :url, :norm, :title, :content, :lang, 'web', :published, now(), 'indexed', CAST(:meta AS jsonb))
             ON CONFLICT (normalized_url) DO UPDATE SET
                 title = EXCLUDED.title,
                 content_text = EXCLUDED.content_text,
@@ -144,7 +148,7 @@ class SearXNGProvider(SearchProvider):
 
     @staticmethod
     def _skip_threshold(num_results: int) -> int:
-        return 1
+        return get_settings().searxng_local_min_hits
 
     def _is_fresh(self, local: list) -> bool:
         ttl = self.settings.searxng_local_ttl_seconds
@@ -157,6 +161,18 @@ class SearXNGProvider(SearchProvider):
                 if now - fetched_at.timestamp() < ttl:
                     return True
         return False
+
+    @staticmethod
+    def _parse_dt(value: object) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
+        except ValueError:
+            return None
 
     @staticmethod
     def _domain(url: str) -> str:
