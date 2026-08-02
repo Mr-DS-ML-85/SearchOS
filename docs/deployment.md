@@ -1,0 +1,75 @@
+# Deployment
+
+SearchOS runs on a single host with Docker Compose (dev/prod small), or split across hosts for scale.
+
+## Single host (recommended)
+
+```bash
+cp .env.example .env   # set BOOTSTRAP_ADMIN_API_KEY
+docker compose --profile web up -d --build
+docker compose ps
+```
+
+Tear down without losing data: `docker compose down` (keep volumes). Full reset: `docker compose down -v`.
+
+## Health gates
+
+The gateway refuses traffic until Postgres and Redis pass `/health/ready`:
+
+```bash
+curl -s http://localhost:8000/health/ready
+```
+
+## Backups
+
+Postgres volume is the only state you can't rebuild.
+
+```bash
+docker compose exec postgres pg_dump -U searchos searchos > searchos-$(date +%F).sql
+```
+
+WAL/periodic dumps and offsite copies are strongly recommended.
+
+## Scaling
+
+- **Workers**: bump `docker compose scale worker=N`. Jobs are claimed with `SELECT ... FOR UPDATE SKIP LOCKED`, so N workers split the queue safely.
+- **Gateway**: stateless — run multiple behind a load balancer; sessions live in Redis (cache + rate limits) and Postgres.
+- **Renderer**: scale the Chromium pool independently.
+- **SearXNG**: run multiple instances behind a load balancer and point `SEARXNG_URL` at the LB for higher web-fallback throughput.
+
+## Reverse proxy (TLS)
+
+Terminate TLS in front of the gateway, e.g. Caddy:
+
+```
+searchos.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+## Metrics & monitoring
+
+- Prometheus scrapes `GET /metrics` (default `:8000/metrics`).
+- Grafana ships in the compose stack at `:3000` (admin/admin — change it).
+- Dashboards expose `searchos_documents_indexed_total`, ingest queue depth, latency histograms, and cache hit rate.
+
+## Common failure modes
+
+| Symptom | Cause / fix |
+|---|---|
+| `/health/ready` not ready | Postgres/Redis down or wrong host — check `DATABASE_URL` / `REDIS_URL` |
+| SearXNG 429s | you hit a live instance repeatedly; SearXNG saves results so re-queries go local |
+| worker idle with pending jobs | restart worker; check `worker.log` for claim errors |
+| renderer missing | ingest falls back to plain fetch; install the renderer for heavy-JS sites |
+| cold-start search latency | first SearXNG hit is slow (2–3s); subsequent same-query hits are instant + cached |
+
+## Local dev (no Docker hostnames)
+
+Config defaults point at Docker service names (`postgres`, `redis`) which don't resolve on the host. For local runs, pass explicit env:
+
+```bash
+export DATABASE_URL=postgresql+asyncpg://searchos:searchos@localhost:5432/searchos
+export REDIS_URL=redis://localhost:6379/0
+export SEARXNG_URL=http://localhost:8080
+export BOOTSTRAP_ADMIN_API_KEY=sk_...
+```

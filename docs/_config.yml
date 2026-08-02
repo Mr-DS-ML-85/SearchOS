@@ -1,0 +1,3 @@
+title: SearchOS
+description: Self-hosted search API for AI agents — Postgres FTS + pgvector, SearXNG web fallback, recursive crawler, stateless MCP.
+theme: null

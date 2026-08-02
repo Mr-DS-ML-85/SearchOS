@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SearchOS — Self-hosted search API for agents</title>
+<meta name="description" content="SearchOS is a self-hosted, open-source search API: pgvector + Postgres FTS, SearXNG web fallback, recursive crawler, and a stateless MCP server.">
+<link rel="icon" href="assets/logo-mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="hero">
+  <img src="assets/banner.svg" alt="SearchOS banner" class="banner">
+  <p class="tagline">Self-hosted search API for AI agents &amp; applications. No vendor lock-in, no per-query fees, no rate-limit ceilings, no data leaving your infra.</p>
+  <nav class="badges">
+    <a href="assets/badges/python.svg"><img src="assets/badges/python.svg" alt="Python"></a>
+    <a href="assets/badges/fastapi.svg"><img src="assets/badges/fastapi.svg" alt="FastAPI"></a>
+    <a href="assets/badges/mcp.svg"><img src="assets/badges/mcp.svg" alt="MCP"></a>
+    <a href="assets/badges/postgres.svg"><img src="assets/badges/postgres.svg" alt="PostgreSQL"></a>
+    <a href="assets/badges/redis.svg"><img src="assets/badges/redis.svg" alt="Redis"></a>
+    <a href="assets/badges/searxng.svg"><img src="assets/badges/searxng.svg" alt="SearXNG"></a>
+    <a href="assets/badges/crawler.svg"><img src="assets/badges/crawler.svg" alt="Crawler"></a>
+    <a href="assets/badges/docker.svg"><img src="assets/badges/docker.svg" alt="Docker"></a>
+    <a href="assets/badges/alembic.svg"><img src="assets/badges/alembic.svg" alt="Alembic"></a>
+    <a href="assets/badges/grafana.svg"><img src="assets/badges/grafana.svg" alt="Grafana"></a>
+    <a href="assets/badges/ci.svg"><img src="assets/badges/ci.svg" alt="CI"></a>
+    <a href="assets/badges/license.svg"><img src="assets/badges/license.svg" alt="MIT"></a>
+  </nav>
+  <div class="cta">
+    <a href="https://github.com/anomalyco/searchos" class="btn primary">View on GitHub</a>
+    <a href="getting-started.md" class="btn">Getting started</a>
+    <a href="api.md" class="btn">API reference</a>
+  </div>
+</header>
+
+<section class="grid">
+  <article>
+    <h2>Your own index, your own API</h2>
+    <p>Every query is answered from your Postgres — full-text (GIN tsvector) + vector (pgvector HNSW) fused with RRF, reranked, cached in Redis. You keep all the data; nothing leaves your infra.</p>
+  </article>
+  <article>
+    <h2>Learns as you search</h2>
+    <p>SearXNG acts as a live web fallback that <em>persists every result into your index</em>. The more you search, the more coverage you own — and repeat queries never touch the network.</p>
+  </article>
+  <article>
+    <h2>Recursive crawler + reindex</h2>
+    <p>Seed a URL or a sitemap; the crawler follows same-domain links up to a configurable depth and keeps pages fresh with continuous recrawling. Dedupes by normalized URL.</p>
+  </article>
+  <article>
+    <h2>Stateless MCP — all transports</h2>
+    <p>A single MCP server exposes <code>search</code>, <code>extract</code>, <code>ingest</code>, <code>stats</code>, <code>health</code> over stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP (2026-07-28 spec).</p>
+  </article>
+</section>
+
+<section class="compare">
+  <h2>vs. the hosted search APIs</h2>
+  <table>
+    <thead>
+      <tr><th></th><th>SearchOS</th><th>SerpApi</th><th>Tavily</th><th>Exa</th><th>Jina</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Self-hosted</td><td class="yes">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+      <tr><td>Your data stays on your infra</td><td class="yes">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+      <tr><td>Per-query pricing</td><td class="yes">None</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>Rate-limit ceilings</td><td class="yes">None</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>Index grows with usage</td><td class="yes">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+      <tr><td>Clean LLM-ready content</td><td class="yes">Yes</td><td>Partial</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+      <tr><td>MCP integration</td><td class="yes">Yes</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="quickstart">
+  <h2>Try it in 30 seconds</h2>
+<pre><code>docker compose --profile web up -d --build
+export ADMIN=$(grep BOOTSTRAP_ADMIN_API_KEY .env | cut -d= -f2)
+
+# seed a page
+curl -s -X POST http://localhost:8000/v1/admin/ingest \
+  -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" \
+  -d '{"url":"https://en.wikipedia.org/wiki/Vector_database","kind":"url"}'
+
+# search it
+curl -s "http://localhost:8000/v1/search?q=vector+database" \
+  -H "Authorization: Bearer $ADMIN"</code></pre>
+</section>
+
+<section class="docs">
+  <h2>Documentation</h2>
+  <ul>
+    <li><a href="getting-started.md">Getting started</a></li>
+    <li><a href="architecture.md">Architecture</a></li>
+    <li><a href="api.md">API reference</a></li>
+    <li><a href="crawler.md">Crawler: recursive + reindex</a></li>
+    <li><a href="searxng.md">SearXNG web fallback</a></li>
+    <li><a href="mcp.md">MCP server (3 transports)</a></li>
+    <li><a href="deployment.md">Deployment</a></li>
+    <li><a href="development.md">Development</a></li>
+  </ul>
+</section>
+
+<footer>
+  <p><a href="https://github.com/anomalyco/searchos">GitHub</a> · <a href="assets/license.svg">MIT License</a> · Built with Postgres, pgvector, SearXNG &amp; the MCP Python SDK.</p>
+</footer>
+
+</body>
+</html>

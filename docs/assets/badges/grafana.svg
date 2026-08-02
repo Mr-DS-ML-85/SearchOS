@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="138" height="28" viewBox="0 0 138 28" role="img">
+  <title>Grafana · metrics</title>
+  <rect width="138" height="28" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <rect x="0" y="0" width="78" height="28" rx="14" fill="#0f172a"/>
+  <rect x="78" y="0" width="60" height="28" rx="14" fill="#16a34a"/>
+  <g transform="translate(10,7) scale(0.5833)" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" color="#cbd5e1">
+      <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>
+  </g>
+  <text x="31" y="18" font-size="12" font-weight="600" fill="#e2e8f0" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">Grafana</text>
+  <text x="88" y="18" font-size="12.5" font-weight="700" fill="#ffffff" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">metrics</text>
+</svg>

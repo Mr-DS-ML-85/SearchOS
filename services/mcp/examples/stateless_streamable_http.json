@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "searchos": {
+      "url": "http://localhost:8099/mcp"
+    }
+  }
+}

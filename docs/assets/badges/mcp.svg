@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="147" height="28" viewBox="0 0 147 28" role="img">
+  <title>MCP · 3 transports</title>
+  <rect width="147" height="28" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <rect x="0" y="0" width="50" height="28" rx="14" fill="#0f172a"/>
+  <rect x="50" y="0" width="96" height="28" rx="14" fill="#7c3aed"/>
+  <g transform="translate(10,7) scale(0.5833)" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" color="#cbd5e1">
+      <path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>
+  </g>
+  <text x="31" y="18" font-size="12" font-weight="600" fill="#e2e8f0" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">MCP</text>
+  <text x="60" y="18" font-size="12.5" font-weight="700" fill="#ffffff" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">3 transports</text>
+</svg>

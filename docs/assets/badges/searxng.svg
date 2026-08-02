@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="174" height="28" viewBox="0 0 174 28" role="img">
+  <title>SearXNG · web fallback</title>
+  <rect width="174" height="28" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <rect x="0" y="0" width="78" height="28" rx="14" fill="#0f172a"/>
+  <rect x="78" y="0" width="96" height="28" rx="14" fill="#ea580c"/>
+  <g transform="translate(10,7) scale(0.5833)" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" color="#cbd5e1">
+      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+  </g>
+  <text x="31" y="18" font-size="12" font-weight="600" fill="#e2e8f0" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">SearXNG</text>
+  <text x="88" y="18" font-size="12.5" font-weight="700" fill="#ffffff" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">web fallback</text>
+</svg>

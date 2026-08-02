@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="216" height="28" viewBox="0 0 216 28" role="img">
+  <title>PostgreSQL · pgvector + HNSW</title>
+  <rect width="216" height="28" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+  <rect x="0" y="0" width="98" height="28" rx="14" fill="#0f172a"/>
+  <rect x="98" y="0" width="118" height="28" rx="14" fill="#2563eb"/>
+  <g transform="translate(10,7) scale(0.5833)" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" color="#cbd5e1">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>
+  </g>
+  <text x="31" y="18" font-size="12" font-weight="600" fill="#e2e8f0" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">PostgreSQL</text>
+  <text x="108" y="18" font-size="12.5" font-weight="700" fill="#ffffff" font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">pgvector + HNSW</text>
+</svg>
