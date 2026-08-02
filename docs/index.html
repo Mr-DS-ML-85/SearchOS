@@ -3,17 +3,45 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SearchOS — Self-hosted search API for agents</title>
-<meta name="description" content="SearchOS is a self-hosted, open-source search API: pgvector + Postgres FTS, SearXNG web fallback, recursive crawler, and a stateless MCP server.">
+<title>SearchOS — the search API that grows a brain</title>
+<meta name="description" content="Self-hosted search for AI agents: Postgres FTS + pgvector, a live web fallback that seeds your own index, and a stateless MCP server. No lock-in, no per-query fees, no rate-limit ceilings.">
 <link rel="icon" href="assets/logo-mark.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 
+<div class="stars" aria-hidden="true"></div>
+
 <header class="hero">
-  <img src="assets/banner.svg" alt="SearchOS banner" class="banner">
-  <p class="tagline">Self-hosted search API for AI agents &amp; applications. No vendor lock-in, no per-query fees, no rate-limit ceilings, no data leaving your infra.</p>
-  <nav class="badges">
+  <div class="mascot" aria-hidden="true">
+    <img src="assets/logo-mark.svg" alt="">
+    <span class="spark s1"></span><span class="spark s2"></span><span class="spark s3"></span>
+  </div>
+  <h1 class="wordmark">Search<span class="grad">OS</span></h1>
+  <p class="tagline">A search API for AI agents that <b>grows a brain</b>. Every search feeds your own index, every crawl makes it smarter — no vendor lock-in, no per-query fees, no rate-limit ceilings, no data leaving your infra.</p>
+
+  <div class="demo" aria-label="Live search demo">
+    <div class="demo-bar">
+      <svg class="glass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <span class="demo-query">milvus cognee</span>
+      <span class="demo-caret" aria-hidden="true"></span>
+      <span class="demo-pill" aria-hidden="true">web fallback</span>
+    </div>
+    <ol class="demo-results" aria-hidden="true">
+      <li><div class="dr-title"></div><div class="dr-src"></div></li>
+      <li><div class="dr-title"></div><div class="dr-src"></div></li>
+      <li><div class="dr-title"></div><div class="dr-src"></div></li>
+    </ol>
+    <p class="demo-caption"><span class="flash"></span> saved to your index · next search won't touch the web</p>
+  </div>
+
+  <div class="cta">
+    <a href="getting-started.md" class="btn primary">Try it in 30s</a>
+    <a href="https://github.com/anomalyco/searchos" class="btn">Star on GitHub</a>
+    <a href="api.md" class="btn ghost">API reference</a>
+  </div>
+
+  <nav class="badges" aria-label="Tech stack">
     <a href="assets/badges/python.svg"><img src="assets/badges/python.svg" alt="Python"></a>
     <a href="assets/badges/fastapi.svg"><img src="assets/badges/fastapi.svg" alt="FastAPI"></a>
     <a href="assets/badges/mcp.svg"><img src="assets/badges/mcp.svg" alt="MCP"></a>
@@ -27,41 +55,54 @@
     <a href="assets/badges/ci.svg"><img src="assets/badges/ci.svg" alt="CI"></a>
     <a href="assets/badges/license.svg"><img src="assets/badges/license.svg" alt="MIT"></a>
   </nav>
-  <div class="cta">
-    <a href="https://github.com/anomalyco/searchos" class="btn primary">View on GitHub</a>
-    <a href="getting-started.md" class="btn">Getting started</a>
-    <a href="api.md" class="btn">API reference</a>
-  </div>
 </header>
 
+<div class="marquee" aria-hidden="true">
+  <div class="marquee-track">
+    <span>your data, your rules</span><i>•</i>
+    <span>no per-query fees</span><i>•</i>
+    <span>index grows while you sleep</span><i>•</i>
+    <span>MCP on 3 transports</span><i>•</i>
+    <span>self-hosted, forever</span><i>•</i>
+    <span>your data, your rules</span><i>•</i>
+    <span>no per-query fees</span><i>•</i>
+    <span>index grows while you sleep</span><i>•</i>
+    <span>MCP on 3 transports</span><i>•</i>
+    <span>self-hosted, forever</span><i>•</i>
+  </div>
+</div>
+
+<main>
+
 <section class="grid">
-  <article>
+  <article class="tilt">
     <h2>Your own index, your own API</h2>
-    <p>Every query is answered from your Postgres — full-text (GIN tsvector) + vector (pgvector HNSW) fused with RRF, reranked, cached in Redis. You keep all the data; nothing leaves your infra.</p>
+    <p>Every query is answered from <em>your</em> Postgres — full-text (GIN tsvector) + vector (pgvector HNSW), fused with RRF, reranked, cached in Redis. Nothing leaves your infra. Ever.</p>
   </article>
-  <article>
+  <article class="tilt">
     <h2>Learns as you search</h2>
-    <p>SearXNG acts as a live web fallback that <em>persists every result into your index</em>. The more you search, the more coverage you own — and repeat queries never touch the network.</p>
+    <p>SearXNG is a live web fallback that <em>persists every result into your index</em>. The more you search, the more coverage you own. Repeat queries never touch the network.</p>
   </article>
-  <article>
-    <h2>Recursive crawler + reindex</h2>
-    <p>Seed a URL or a sitemap; the crawler follows same-domain links up to a configurable depth and keeps pages fresh with continuous recrawling. Dedupes by normalized URL.</p>
+  <article class="tilt">
+    <h2>Crawls while you sleep</h2>
+    <p>Seed a URL or sitemap; the crawler follows same-domain links up to a configurable depth and keeps pages fresh with continuous recrawling. Dedupes by normalized URL.</p>
   </article>
-  <article>
-    <h2>Stateless MCP — all transports</h2>
-    <p>A single MCP server exposes <code>search</code>, <code>extract</code>, <code>ingest</code>, <code>stats</code>, <code>health</code> over stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP (2026-07-28 spec).</p>
+  <article class="tilt">
+    <h2>MCP, all three ways</h2>
+    <p>One server exposes <code>search</code>, <code>extract</code>, <code>ingest</code>, <code>stats</code>, <code>health</code> over stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP (2026-07-28).</p>
   </article>
 </section>
 
 <section class="compare">
-  <h2>vs. the hosted search APIs</h2>
+  <h2 class="section-title">vs. the hosted search APIs</h2>
+  <div class="table-wrap">
   <table>
     <thead>
-      <tr><th></th><th>SearchOS</th><th>SerpApi</th><th>Tavily</th><th>Exa</th><th>Jina</th></tr>
+      <tr><th></th><th class="hero-col">SearchOS</th><th>SerpApi</th><th>Tavily</th><th>Exa</th><th>Jina</th></tr>
     </thead>
     <tbody>
       <tr><td>Self-hosted</td><td class="yes">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-      <tr><td>Your data stays on your infra</td><td class="yes">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+      <tr><td>Data stays on your infra</td><td class="yes">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
       <tr><td>Per-query pricing</td><td class="yes">None</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
       <tr><td>Rate-limit ceilings</td><td class="yes">None</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
       <tr><td>Index grows with usage</td><td class="yes">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
@@ -69,40 +110,154 @@
       <tr><td>MCP integration</td><td class="yes">Yes</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
     </tbody>
   </table>
+  </div>
+  <p class="table-note">The pattern? Everybody charges per call and caps your rate. SearchOS charges nothing and gets smarter every time you use it.</p>
 </section>
 
 <section class="quickstart">
-  <h2>Try it in 30 seconds</h2>
-<pre><code>docker compose --profile web up -d --build
-export ADMIN=$(grep BOOTSTRAP_ADMIN_API_KEY .env | cut -d= -f2)
+  <h2 class="section-title">Try it in 30 seconds</h2>
+  <div class="terminal">
+    <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">bash</span></div>
+<pre><code><span class="c"># boot the whole stack, web fallback included</span>
+docker compose --profile web up -d --build
 
-# seed a page
+<span class="c"># seed a page</span>
 curl -s -X POST http://localhost:8000/v1/admin/ingest \
   -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" \
   -d '{"url":"https://en.wikipedia.org/wiki/Vector_database","kind":"url"}'
 
-# search it
+<span class="c"># search it — answered from YOUR index</span>
 curl -s "http://localhost:8000/v1/search?q=vector+database" \
   -H "Authorization: Bearer $ADMIN"</code></pre>
+  </div>
 </section>
 
 <section class="docs">
-  <h2>Documentation</h2>
-  <ul>
-    <li><a href="getting-started.md">Getting started</a></li>
-    <li><a href="architecture.md">Architecture</a></li>
-    <li><a href="api.md">API reference</a></li>
-    <li><a href="crawler.md">Crawler: recursive + reindex</a></li>
-    <li><a href="searxng.md">SearXNG web fallback</a></li>
-    <li><a href="mcp.md">MCP server (3 transports)</a></li>
-    <li><a href="deployment.md">Deployment</a></li>
-    <li><a href="development.md">Development</a></li>
-  </ul>
+  <h2 class="section-title">Read the docs</h2>
+  <div class="doc-grid">
+    <a class="doc-card" href="getting-started.md"><b>Getting started</b><span>from zero to searching</span></a>
+    <a class="doc-card" href="architecture.md"><b>Architecture</b><span>how the pieces fit</span></a>
+    <a class="doc-card" href="api.md"><b>API reference</b><span>every endpoint, every param</span></a>
+    <a class="doc-card" href="crawler.md"><b>Crawler</b><span>recursive + reindex</span></a>
+    <a class="doc-card" href="searxng.md"><b>SearXNG fallback</b><span>web that seeds your index</span></a>
+    <a class="doc-card" href="mcp.md"><b>MCP server</b><span>all 3 transports</span></a>
+    <a class="doc-card" href="deployment.md"><b>Deployment</b><span>compose to scale-out</span></a>
+    <a class="doc-card" href="development.md"><b>Development</b><span>hack on it yourself</span></a>
+  </div>
 </section>
 
+</main>
+
 <footer>
-  <p><a href="https://github.com/anomalyco/searchos">GitHub</a> · <a href="assets/license.svg">MIT License</a> · Built with Postgres, pgvector, SearXNG &amp; the MCP Python SDK.</p>
+  <p>Built with Postgres, pgvector, SearXNG &amp; the MCP Python SDK. <a href="https://github.com/anomalyco/searchos">GitHub</a> · <a href="assets/badges/license.svg">MIT</a></p>
 </footer>
 
+<script>
+/* ---- live demo: loops fake searches so the page feels alive ---- */
+const queries = [
+  ["milvus cognee", "web fallback"],
+  ["vector database", "indexed 68 chunks"],
+  ["hnsw gpu", "local · 4 results"],
+  ["temporal gnn", "web fallback"],
+  ["searchos mcp", "local · 3 results"],
+];
+const titles = [
+  "Milvus × Cognee — a practical deep dive",
+  "Vector databases, explained simply",
+  "HNSW on GPU — the fast path",
+  "Temporal GNNs for node classification",
+  "Self-hosted search with MCP in 30s",
+];
+const caps = [
+  "saved to your index · next search won't touch the web",
+  "re-indexed & fresh · answer came from your Postgres",
+  "answered locally · zero network calls",
+  "persisted for the next agent that asks",
+  "your crawler keeps it current forever",
+];
+const q = document.querySelector(".demo-query");
+const pill = document.querySelector(".demo-pill");
+const cap = document.querySelector(".demo-caption");
+const rows = [...document.querySelectorAll(".demo-results li")];
+const srcs = [...document.querySelectorAll(".dr-src")];
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+async function typeInto(el, text){
+  el.textContent = "";
+  for (let i = 0; i < text.length; i++){
+    el.textContent = text.slice(0, i + 1);
+    await sleep(45 + Math.random() * 40);
+  }
+  await sleep(450);
+}
+
+async function runDemo(){
+  let tick = 0;
+  while (true){
+    const [query, tag] = queries[tick % queries.length];
+    const title = titles[tick % titles.length];
+    cap.textContent = caps[tick % caps.length];
+    pill.textContent = tag;
+    pill.classList.add("pop");
+    rows.forEach(li => li.classList.remove("show"));
+    await sleep(300);
+    await typeInto(q, query);
+    for (let i = 0; i < rows.length; i++){
+      rows[i].classList.add("show");
+      rows[i].querySelector(".dr-title").textContent =
+        i === 0 ? title : `${title.split(" ").slice(0, 4).join(" ")} — related notes`;
+      srcs[i].textContent = i === 0 ? tag : `local · ${3 - i} cached result${i > 1 ? "s" : ""}`;
+      await sleep(420);
+    }
+    await sleep(2600);
+    pill.classList.remove("pop");
+    tick++;
+  }
+}
+runDemo();
+
+/* ---- little sparkle trail on the wordmark ---- */
+const stars = document.querySelector(".stars");
+function makeStar(){
+  const s = document.createElement("span");
+  s.className = "star";
+  s.style.left = Math.random() * 100 + "vw";
+  s.style.animationDuration = 6 + Math.random() * 9 + "s";
+  s.style.animationDelay = Math.random() * 8 + "s";
+  s.style.fontSize = 6 + Math.random() * 10 + "px";
+  stars.appendChild(s);
+  setTimeout(() => s.remove(), 16000);
+}
+for (let i = 0; i < 26; i++) makeStar();
+
+/* ---- gentle card tilt on hover (desktop only) ---- */
+if (window.matchMedia("(pointer: fine)").matches){
+  document.querySelectorAll(".tilt").forEach(card => {
+    card.addEventListener("mousemove", e => {
+      const r = card.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width - 0.5;
+      const y = (e.clientY - r.top) / r.height - 0.5;
+      card.style.transform = `perspective(700px) rotateY(${x * 6}deg) rotateX(${-y * 6}deg)`;
+    });
+    card.addEventListener("mouseleave", () => { card.style.transform = ""; });
+  });
+}
+
+/* ---- sparkle burst when clicking the mascot ---- */
+const mascot = document.querySelector(".mascot");
+mascot.addEventListener("click", e => {
+  for (let i = 0; i < 8; i++){
+    const sp = document.createElement("span");
+    sp.className = "burst";
+    sp.textContent = "✦";
+    const a = i / 8 * Math.PI * 2;
+    sp.style.setProperty("--dx", Math.cos(a) * 70 + "px");
+    sp.style.setProperty("--dy", Math.sin(a) * 70 + "px");
+    mascot.appendChild(sp);
+    setTimeout(() => sp.remove(), 700);
+  }
+});
+</script>
 </body>
 </html>
