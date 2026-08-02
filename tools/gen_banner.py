@@ -18,10 +18,11 @@ VIOLET = "#8b5cf6"
 CYAN = "#22d3ee"
 WHITE = "#ffffff"
 SLATE = "#94a3b8"
+BANNER_W = 1700
 FONT = 'font-family="Inter, -apple-system, \'Segoe UI\', Roboto, sans-serif"'
 
 def banner() -> str:
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300">
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BANNER_W} 300" width="{BANNER_W}" height="300">
 <defs>
   <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
     <stop offset="0" stop-color="#0b1020"/>
@@ -51,8 +52,8 @@ def banner() -> str:
     <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#ffffff" stroke-opacity="0.05"/>
   </pattern>
 </defs>
-<rect width="1200" height="300" fill="url(#bg)"/>
-<rect width="1200" height="300" fill="url(#grid)"/>
+<rect width="{BANNER_W}" height="300" fill="url(#bg)"/>
+<rect width="{BANNER_W}" height="300" fill="url(#grid)"/>
 <circle cx="1030" cy="60" r="180" fill="url(#orb1)"/>
 <circle cx="1150" cy="240" r="150" fill="url(#orb2)"/>
 <circle cx="180" cy="270" r="130" fill="url(#orb2)"/>
@@ -89,7 +90,7 @@ def main() -> None:
     print("wrote", svg)
     try:
         png = os.path.join(OUT, "banner.png")
-        subprocess.run(["rsvg-convert", "-w", "1200", "-h", "300", "-o", png, svg], check=True)
+        subprocess.run(["rsvg-convert", "-w", str(BANNER_W), "-h", "300", "-o", png, svg], check=True)
         print("wrote", png)
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         print("skip png:", e)
