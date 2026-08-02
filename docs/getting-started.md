@@ -10,7 +10,7 @@ This guide walks you from an empty machine to a working SearchOS install with an
 ## 2. Configure
 
 ```bash
-git clone <your-repo> searchos
+git clone https://github.com/Mr-DS-ML-85/SearchOS.git searchos
 cd searchos
 cp .env.example .env
 ```
