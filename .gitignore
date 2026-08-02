@@ -173,3 +173,6 @@
 *.lz
 *.lzma
 *.iso
+
+# lockfiles
+uv.lock
