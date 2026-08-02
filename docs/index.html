@@ -10,17 +10,68 @@
 </head>
 <body>
 
-<div class="stars" aria-hidden="true"></div>
-
-<header class="hero">
-  <div class="mascot" aria-hidden="true">
+<nav class="nav">
+  <a class="nav-brand" href="#top">
     <img src="assets/logo-mark.svg" alt="">
-    <span class="spark s1"></span><span class="spark s2"></span><span class="spark s3"></span>
+    <span>Search<b>OS</b></span>
+  </a>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#compare">Compare</a>
+    <a href="#demo">Demo</a>
+    <a href="#docs">Docs</a>
   </div>
-  <h1 class="wordmark">Search<span class="grad">OS</span></h1>
-  <p class="tagline">A search API for AI agents that <b>grows a brain</b>. Every search feeds your own index, every crawl makes it smarter — no vendor lock-in, no per-query fees, no rate-limit ceilings, no data leaving your infra.</p>
+  <a class="nav-cta" href="https://github.com/anomalyco/searchos">GitHub</a>
+</nav>
 
-  <div class="demo" aria-label="Live search demo">
+<header id="top" class="hero">
+  <canvas id="brain" aria-hidden="true"></canvas>
+  <div class="hero-inner">
+    <p class="eyebrow">self-hosted · open source · agent-ready</p>
+    <h1 class="wordmark">The search API that <span class="grad">grows a brain</span></h1>
+    <p class="tagline">Every search feeds your own index. Every crawl makes it smarter. Postgres FTS + pgvector, a live web fallback that seeds your data, and MCP on three transports — no lock-in, no per-query fees, no rate-limit ceilings.</p>
+    <div class="cta">
+      <a href="#demo" class="btn primary">Watch it search</a>
+      <a href="getting-started.md" class="btn">Get started</a>
+      <a href="https://github.com/anomalyco/searchos" class="btn ghost">View on GitHub</a>
+    </div>
+    <div class="stats" id="stats">
+      <div class="stat"><b data-count="834">0</b><span>documents indexed</span></div>
+      <div class="stat"><b data-count="55">0</b><span>web-seeded pages</span></div>
+      <div class="stat"><b data-count="12">0</b><span>search providers &amp; tools</span></div>
+      <div class="stat"><b data-count="3">0</b><span>MCP transports</span></div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section class="feature-row" id="features">
+  <article class="card tilt">
+    <div class="card-icon" data-icon="db"></div>
+    <h3>Your index, your rules</h3>
+    <p>Every query is answered from your Postgres — GIN full-text + pgvector HNSW, fused with RRF, reranked, cached in Redis. Nothing leaves your infra.</p>
+  </article>
+  <article class="card tilt">
+    <div class="card-icon" data-icon="feed"></div>
+    <h3>Learns as you search</h3>
+    <p>SearXNG is a live web fallback that persists every result into your index. The more you search, the more coverage you own. Repeat queries never touch the network.</p>
+  </article>
+  <article class="card tilt">
+    <div class="card-icon" data-icon="crawl"></div>
+    <h3>Crawls while you sleep</h3>
+    <p>Seed a URL or sitemap; the crawler follows same-domain links to a configurable depth and keeps pages fresh with continuous recrawling. Dedupe by normalized URL.</p>
+  </article>
+  <article class="card tilt">
+    <div class="card-icon" data-icon="mcp"></div>
+    <h3>MCP, all three ways</h3>
+    <p>One server exposes <code>search</code>, <code>extract</code>, <code>ingest</code>, <code>stats</code>, <code>health</code> over stdio, legacy HTTP+SSE, and stateless Streamable HTTP.</p>
+  </article>
+</section>
+
+<section class="demo-wrap" id="demo">
+  <h2 class="section-title">It remembers, <span class="grad">then it never searches again</span></h2>
+  <div class="demo">
     <div class="demo-bar">
       <svg class="glass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       <span class="demo-query">milvus cognee</span>
@@ -32,68 +83,11 @@
       <li><div class="dr-title"></div><div class="dr-src"></div></li>
       <li><div class="dr-title"></div><div class="dr-src"></div></li>
     </ol>
-    <p class="demo-caption"><span class="flash"></span> saved to your index · next search won't touch the web</p>
+    <p class="demo-caption"><span class="flash"></span><span class="cap-text">saved to your index · next search won't touch the web</span></p>
   </div>
-
-  <div class="cta">
-    <a href="getting-started.md" class="btn primary">Try it in 30s</a>
-    <a href="https://github.com/anomalyco/searchos" class="btn">Star on GitHub</a>
-    <a href="api.md" class="btn ghost">API reference</a>
-  </div>
-
-  <nav class="badges" aria-label="Tech stack">
-    <a href="assets/badges/python.svg"><img src="assets/badges/python.svg" alt="Python"></a>
-    <a href="assets/badges/fastapi.svg"><img src="assets/badges/fastapi.svg" alt="FastAPI"></a>
-    <a href="assets/badges/mcp.svg"><img src="assets/badges/mcp.svg" alt="MCP"></a>
-    <a href="assets/badges/postgres.svg"><img src="assets/badges/postgres.svg" alt="PostgreSQL"></a>
-    <a href="assets/badges/redis.svg"><img src="assets/badges/redis.svg" alt="Redis"></a>
-    <a href="assets/badges/searxng.svg"><img src="assets/badges/searxng.svg" alt="SearXNG"></a>
-    <a href="assets/badges/crawler.svg"><img src="assets/badges/crawler.svg" alt="Crawler"></a>
-    <a href="assets/badges/docker.svg"><img src="assets/badges/docker.svg" alt="Docker"></a>
-    <a href="assets/badges/alembic.svg"><img src="assets/badges/alembic.svg" alt="Alembic"></a>
-    <a href="assets/badges/grafana.svg"><img src="assets/badges/grafana.svg" alt="Grafana"></a>
-    <a href="assets/badges/ci.svg"><img src="assets/badges/ci.svg" alt="CI"></a>
-    <a href="assets/badges/license.svg"><img src="assets/badges/license.svg" alt="MIT"></a>
-  </nav>
-</header>
-
-<div class="marquee" aria-hidden="true">
-  <div class="marquee-track">
-    <span>your data, your rules</span><i>•</i>
-    <span>no per-query fees</span><i>•</i>
-    <span>index grows while you sleep</span><i>•</i>
-    <span>MCP on 3 transports</span><i>•</i>
-    <span>self-hosted, forever</span><i>•</i>
-    <span>your data, your rules</span><i>•</i>
-    <span>no per-query fees</span><i>•</i>
-    <span>index grows while you sleep</span><i>•</i>
-    <span>MCP on 3 transports</span><i>•</i>
-    <span>self-hosted, forever</span><i>•</i>
-  </div>
-</div>
-
-<main>
-
-<section class="grid">
-  <article class="tilt">
-    <h2>Your own index, your own API</h2>
-    <p>Every query is answered from <em>your</em> Postgres — full-text (GIN tsvector) + vector (pgvector HNSW), fused with RRF, reranked, cached in Redis. Nothing leaves your infra. Ever.</p>
-  </article>
-  <article class="tilt">
-    <h2>Learns as you search</h2>
-    <p>SearXNG is a live web fallback that <em>persists every result into your index</em>. The more you search, the more coverage you own. Repeat queries never touch the network.</p>
-  </article>
-  <article class="tilt">
-    <h2>Crawls while you sleep</h2>
-    <p>Seed a URL or sitemap; the crawler follows same-domain links up to a configurable depth and keeps pages fresh with continuous recrawling. Dedupes by normalized URL.</p>
-  </article>
-  <article class="tilt">
-    <h2>MCP, all three ways</h2>
-    <p>One server exposes <code>search</code>, <code>extract</code>, <code>ingest</code>, <code>stats</code>, <code>health</code> over stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP (2026-07-28).</p>
-  </article>
 </section>
 
-<section class="compare">
+<section class="compare" id="compare">
   <h2 class="section-title">vs. the hosted search APIs</h2>
   <div class="table-wrap">
   <table>
@@ -111,7 +105,7 @@
     </tbody>
   </table>
   </div>
-  <p class="table-note">The pattern? Everybody charges per call and caps your rate. SearchOS charges nothing and gets smarter every time you use it.</p>
+  <p class="table-note">Everyone charges per call and caps your rate. SearchOS charges nothing and gets smarter every time you use it.</p>
 </section>
 
 <section class="quickstart">
@@ -132,7 +126,7 @@ curl -s "http://localhost:8000/v1/search?q=vector+database" \
   </div>
 </section>
 
-<section class="docs">
+<section class="docs" id="docs">
   <h2 class="section-title">Read the docs</h2>
   <div class="doc-grid">
     <a class="doc-card" href="getting-started.md"><b>Getting started</b><span>from zero to searching</span></a>
@@ -153,7 +147,127 @@ curl -s "http://localhost:8000/v1/search?q=vector+database" \
 </footer>
 
 <script>
-/* ---- live demo: loops fake searches so the page feels alive ---- */
+/* =========================================================
+   3D knowledge-graph "brain" — a rotating constellation
+   drawn on canvas, responding to the mouse. The model of
+   the index SearchOS builds as you search and crawl.
+   ========================================================= */
+(function(){
+  const canvas = document.getElementById("brain");
+  const ctx = canvas.getContext("2d");
+  let W, H, DPR;
+  let mouseX = 0, mouseY = 0, tx = 0, ty = 0;
+
+  const POINTS = 220;
+  const pts = [];
+  for (let i = 0; i < POINTS; i++){
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const r = 1.6 + Math.random() * 1.1;          // shell + a few inner
+    pts.push({
+      x: r * Math.sin(phi) * Math.cos(theta),
+      y: r * Math.sin(phi) * Math.sin(theta),
+      z: r * Math.cos(phi),
+      tw: Math.random() * Math.PI * 2
+    });
+  }
+
+  function resize(){
+    const rect = canvas.parentElement.getBoundingClientRect();
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = rect.width; H = rect.height;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + "px"; canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  function project(p, rot, focus){
+    const cx = Math.cos(rot.x), sx = Math.sin(rot.x);
+    const cy = Math.cos(rot.y), sy = Math.sin(rot.y);
+    let x = p.x * cy + p.z * sy;
+    let z = -p.x * sy + p.z * cy;
+    let y = p.y * cx + z * sx;
+    z = -p.y * sx + z * cx;
+    const scale = focus / (focus + z);
+    return { x: W/2 + x * focus * scale * 0.55, y: H/2 + y * focus * scale * 0.55, z, scale };
+  }
+
+  const LINK_MIN = 1.4, LINK_MAX = 3.1;
+
+  function frame(t){
+    const rot = {
+      x: 0.34 + Math.sin(t * 0.00012) * 0.16 + ty,
+      y: t * 0.00016 + tx
+    };
+    ctx.clearRect(0, 0, W, H);
+    const focus = Math.min(W, 600);
+    const proj = pts.map(p => ({ p, s: project(p, rot, focus) }));
+
+    // links
+    ctx.lineWidth = 1;
+    for (let i = 0; i < proj.length; i++){
+      for (let j = i + 1; j < proj.length; j++){
+        const a = proj[i].p, b = proj[j].p;
+        const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
+        if (d > LINK_MIN && d < LINK_MAX){
+          const o = (1 - d / LINK_MAX) * 0.16;
+          if (o > 0.02){
+            ctx.strokeStyle = `rgba(124,108,255,${o})`;
+            ctx.beginPath();
+            ctx.moveTo(proj[i].s.x, proj[i].s.y);
+            ctx.lineTo(proj[j].s.x, proj[j].s.y);
+            ctx.stroke();
+          }
+        }
+      }
+    }
+    // points
+    const nearest = proj.slice().sort((p, q) => p.s.z - q.s.z);
+    for (const { p, s } of nearest){
+      const tw = 0.6 + 0.4 * Math.sin(t * 0.001 + p.tw);
+      const fade = Math.max(0, Math.min(1, (s.z + 4) / 6));
+      const r = (1.3 + s.scale * 1.6) * tw;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(180,190,255,${0.12 + fade * 0.75})`;
+      ctx.fill();
+    }
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener("resize", resize);
+  window.addEventListener("mousemove", e => {
+    mouseX = (e.clientX / window.innerWidth - 0.5);
+    mouseY = (e.clientY / window.innerHeight - 0.5);
+  });
+  (function ease(){
+    tx += (mouseX * 0.5 - tx) * 0.04;
+    ty += (mouseY * 0.4 - ty) * 0.04;
+    requestAnimationFrame(ease);
+  })();
+
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  resize();
+  if (reduced){
+    // static frame
+    const t = performance.now();
+    const rot = { x: 0.34, y: t * 0.00016 };
+    ctx.clearRect(0, 0, W, H);
+    const focus = Math.min(W, 600);
+    for (const p of pts){
+      const s = project(p, rot, focus);
+      const fade = Math.max(0, Math.min(1, (s.z + 4) / 6));
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 1.5 * s.scale, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(180,190,255,${0.12 + fade * 0.75})`;
+      ctx.fill();
+    }
+  } else {
+    requestAnimationFrame(frame);
+  }
+})();
+
+/* ---- live search demo: loops fake searches so the page feels alive ---- */
 const queries = [
   ["milvus cognee", "web fallback"],
   ["vector database", "indexed 68 chunks"],
@@ -177,11 +291,10 @@ const caps = [
 ];
 const q = document.querySelector(".demo-query");
 const pill = document.querySelector(".demo-pill");
-const cap = document.querySelector(".demo-caption");
+const cap = document.querySelector(".cap-text");
 const rows = [...document.querySelectorAll(".demo-results li")];
 const srcs = [...document.querySelectorAll(".dr-src")];
-
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function typeInto(el, text){
   el.textContent = "";
@@ -189,7 +302,7 @@ async function typeInto(el, text){
     el.textContent = text.slice(0, i + 1);
     await sleep(45 + Math.random() * 40);
   }
-  await sleep(450);
+  await sleep(420);
 }
 
 async function runDemo(){
@@ -201,63 +314,62 @@ async function runDemo(){
     pill.textContent = tag;
     pill.classList.add("pop");
     rows.forEach(li => li.classList.remove("show"));
-    await sleep(300);
+    await sleep(280);
     await typeInto(q, query);
     for (let i = 0; i < rows.length; i++){
-      rows[i].classList.add("show");
-      rows[i].querySelector(".dr-title").textContent =
+      const li = rows[i];
+      li.classList.add("show");
+      li.querySelector(".dr-title").textContent =
         i === 0 ? title : `${title.split(" ").slice(0, 4).join(" ")} — related notes`;
       srcs[i].textContent = i === 0 ? tag : `local · ${3 - i} cached result${i > 1 ? "s" : ""}`;
       await sleep(420);
     }
-    await sleep(2600);
+    await sleep(2500);
     pill.classList.remove("pop");
     tick++;
   }
 }
 runDemo();
 
-/* ---- little sparkle trail on the wordmark ---- */
-const stars = document.querySelector(".stars");
-function makeStar(){
-  const s = document.createElement("span");
-  s.className = "star";
-  s.style.left = Math.random() * 100 + "vw";
-  s.style.animationDuration = 6 + Math.random() * 9 + "s";
-  s.style.animationDelay = Math.random() * 8 + "s";
-  s.style.fontSize = 6 + Math.random() * 10 + "px";
-  stars.appendChild(s);
-  setTimeout(() => s.remove(), 16000);
+/* ---- count-up stats when scrolled into view ---- */
+const statBox = document.getElementById("stats");
+let counted = false;
+function countUp(){
+  if (counted) return;
+  const r = statBox.getBoundingClientRect();
+  if (r.top < window.innerHeight * 0.85){
+    counted = true;
+    document.querySelectorAll("[data-count]").forEach(el => {
+      const target = +el.dataset.count;
+      const start = performance.now();
+      const dur = 1200;
+      (function step(now){
+        const p = Math.min(1, (now - start) / dur);
+        el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3)));
+        if (p < 1) requestAnimationFrame(step);
+      })(start);
+    });
+  }
 }
-for (let i = 0; i < 26; i++) makeStar();
+window.addEventListener("scroll", countUp);
+countUp();
 
-/* ---- gentle card tilt on hover (desktop only) ---- */
+/* ---- 3D tilt on cards (fine pointers only) ---- */
 if (window.matchMedia("(pointer: fine)").matches){
   document.querySelectorAll(".tilt").forEach(card => {
     card.addEventListener("mousemove", e => {
       const r = card.getBoundingClientRect();
       const x = (e.clientX - r.left) / r.width - 0.5;
       const y = (e.clientY - r.top) / r.height - 0.5;
-      card.style.transform = `perspective(700px) rotateY(${x * 6}deg) rotateX(${-y * 6}deg)`;
+      card.style.transform = `perspective(900px) rotateY(${x * 7}deg) rotateX(${-y * 7}deg) translateY(-4px)`;
+      card.style.boxShadow = `0 22px 50px rgba(0,0,0,.5), ${x * 18}px ${y * 12}px 40px rgba(124,108,255,.16)`;
     });
-    card.addEventListener("mouseleave", () => { card.style.transform = ""; });
+    card.addEventListener("mouseleave", () => {
+      card.style.transform = "";
+      card.style.boxShadow = "";
+    });
   });
 }
-
-/* ---- sparkle burst when clicking the mascot ---- */
-const mascot = document.querySelector(".mascot");
-mascot.addEventListener("click", e => {
-  for (let i = 0; i < 8; i++){
-    const sp = document.createElement("span");
-    sp.className = "burst";
-    sp.textContent = "✦";
-    const a = i / 8 * Math.PI * 2;
-    sp.style.setProperty("--dx", Math.cos(a) * 70 + "px");
-    sp.style.setProperty("--dy", Math.sin(a) * 70 + "px");
-    mascot.appendChild(sp);
-    setTimeout(() => sp.remove(), 700);
-  }
-});
 </script>
 </body>
 </html>
