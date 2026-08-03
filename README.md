@@ -36,7 +36,7 @@
 
 ---
 
-SearchOS builds a production-grade, fully self-hosted search API from open-source components. This is the "Apple approach" applied to search: instead of picking one vendor, it studies what makes each search API good — Exa's semantic neural index, Tavily's clean LLM-ready content, SerpApi's rich SERP parameters, Jina's JS-rendered reading — then rebuilds those features yourself so you get the strengths without the vendor lock-in:
+SearchOS builds a production-grade, fully self-hosted search API from open-source components. This is the "Combined approach" applied to search: instead of picking one vendor, it studies what makes each search API good — Exa's semantic neural index, Tavily's clean LLM-ready content, SerpApi's rich SERP parameters, Jina's JS-rendered reading — then rebuilds those features yourself so you get the strengths without the vendor lock-in:
 
 | Layer | SerpApi | Tavily | Exa | Jina | SearchOS |
 |---|---|---|---|---|---|
