@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchResult
-from app.search.base import ProviderQuery, ProviderResult, SearchProvider
+from app.search.base import ProviderQuery, ProviderResult, SearchProvider, domain_of
 
 logger = get_logger("search.providers.tavily")
 
@@ -95,6 +95,7 @@ class TavilyProvider(SearchProvider):
                     snippet=snippet[:1200],
                     source=self.name,
                     rank=rank,
+                    domain=domain_of(url),
                     score=float(item.get("score") or 0.0),
                     published=self._published(item.get("published_date")),
                 )

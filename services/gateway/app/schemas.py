@@ -4,7 +4,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-SearchSource = Literal["all", "local", "vector", "web"]
+# "web" is the SearXNG+Tavily+Exa+Jina cascade. The individual tiers are also
+# addressable so a caller can test or pin one upstream.
+SearchSource = Literal["all", "local", "vector", "web", "searxng", "tavily", "exa", "jina"]
 
 
 class SearchRequest(BaseModel):

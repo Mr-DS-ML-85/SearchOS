@@ -49,9 +49,16 @@ def build_orchestrator():
         elif settings.searxng_url:
             from app.search.providers.searxng import SearXNGProvider
 
-            orchestrator.providers["web"] = SearXNGProvider(
-                get_session_factory(), settings.searxng_url, settings.searxng_timeout_seconds
-            )
+            searxng = SearXNGProvider(get_session_factory(), settings.searxng_url, settings.searxng_timeout_seconds)
+            orchestrator.providers["web"] = searxng
+            orchestrator.providers["searxng"] = searxng
+
+        # Also register each tier on its own name so sources=tavily / exa /
+        # jina / searxng can pin one upstream. Without this those values were
+        # rejected by the enum, which made it impossible to tell whether a tier
+        # was dead, misconfigured, or simply never reached.
+        for tier in getattr(cascade, "tiers", []):
+            orchestrator.providers.setdefault(tier.name, tier)
     return orchestrator
 
 

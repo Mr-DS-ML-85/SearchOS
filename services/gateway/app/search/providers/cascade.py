@@ -123,7 +123,7 @@ def build_cascade(settings=None) -> CascadeProvider | None:
     """
     cfg = settings or get_settings()
     from app.db import get_session_factory
-    from app.search.providers.exa import ExaProvider
+    from app.search.providers.exa_mcp import ExaMCPProvider
     from app.search.providers.jina import JinaProvider
     from app.search.providers.searxng import SearXNGProvider
     from app.search.providers.tavily import TavilyProvider
@@ -134,11 +134,17 @@ def build_cascade(settings=None) -> CascadeProvider | None:
     # Tavily is included even with no key: its keyless mode needs no account.
     if cfg.tavily_api_key or cfg.tavily_keyless:
         tiers.append(TavilyProvider(cfg.tavily_api_key, cfg.tavily_timeout_seconds, keyless=cfg.tavily_keyless))
-    # Exa's REST API returns 402 x402 without payment. Its free tier is the
-    # hosted MCP server, not this endpoint, so an unkeyed REST tier would only
-    # burn a timeout on every search.
-    if cfg.exa_api_key:
+    # Exa's REST API returns 402 x402 without payment. The hosted MCP server at
+    # mcp.exa.ai answers anonymously under a rate limit, so MCP is the default
+    # route and REST is only used when a funded key is configured.
+    if cfg.exa_api_key and cfg.exa_use_mcp:
+        tiers.append(ExaMCPProvider(cfg.exa_timeout_seconds, advanced=cfg.exa_advanced, api_key=cfg.exa_api_key))
+    elif cfg.exa_api_key:
+        from app.search.providers.exa import ExaProvider
+
         tiers.append(ExaProvider(cfg.exa_api_key, cfg.exa_timeout_seconds))
+    elif cfg.exa_mcp_enabled:
+        tiers.append(ExaMCPProvider(cfg.exa_timeout_seconds, advanced=cfg.exa_advanced))
     # s.jina.ai returns 401 AuthenticationRequired without a key; only
     # r.jina.ai (the reader) is open. Do not add an unkeyed search tier.
     if cfg.jina_api_key:

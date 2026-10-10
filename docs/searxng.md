@@ -71,6 +71,11 @@ order and the first that answers wins:
 3. **Exa** — requires a key; the REST API returns 402 without one
 4. **Jina** — requires a key; `s.jina.ai` returns 401 without one
 
+Exa is reached over its hosted **MCP** server (`mcp.exa.ai/mcp`), not its REST
+API: REST returns `402 x402 payment-required` without a funded key, while the
+MCP endpoint answers anonymously under a rate limit. Set `EXA_API_KEY` with
+`EXA_USE_MCP=false` to use REST instead.
+
 A tier that answers with zero results does not stop the chain: it counts as a
 miss and the next tier is tried, since an empty SERP is usually a rate limit
 rather than a genuine "nothing exists".
@@ -91,6 +96,27 @@ Search responses carry which tier answered, under `raw` in the provider path:
 docker compose logs gateway | grep "web served by"
 # web served by tavily after 2 tier(s): rust tokio async runtime scheduler
 ```
+
+## Selecting one upstream
+
+Each tier is addressable by name, so you can test or pin a single provider
+without waiting for the primary to fail:
+
+```bash
+curl -s "http://localhost:8000/v1/search?q=tokio&sources=tavily&cache=false" -H "Authorization: Bearer $KEY"
+curl -s "http://localhost:8000/v1/search?q=tokio&sources=exa&cache=false"     -H "Authorization: Bearer $KEY"
+curl -s "http://localhost:8000/v1/search?q=tokio&sources=searxng&cache=false" -H "Authorization: Bearer $KEY"
+```
+
+Accepted values are `all`, `local`, `vector`, `web` (the cascade), and the
+four tier names. A tier that is not configured returns an error rather than
+silently falling back, so an empty result means the upstream genuinely had
+none — `degraded` in the response names any tier that errored.
+
+SearXNG intermittently returns **zero results** with no error when its own
+upstream engines are suspended or rate-limited; `docker compose logs searxng`
+shows the suspensions. That is exactly the case the cascade exists for: `web`
+treats an empty answer as a miss and descends to the next tier.
 
 ## Notes
 

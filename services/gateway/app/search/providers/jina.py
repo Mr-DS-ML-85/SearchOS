@@ -6,7 +6,7 @@ from app.config import get_settings
 from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchResult
-from app.search.base import ProviderQuery, ProviderResult, SearchProvider
+from app.search.base import ProviderQuery, ProviderResult, SearchProvider, domain_of
 
 logger = get_logger("search.providers.jina")
 
@@ -60,6 +60,7 @@ class JinaProvider(SearchProvider):
                     snippet=snippet[:1200],
                     source=self.name,
                     rank=rank,
+                    domain=domain_of(url),
                     # Jina returns no score. Ordering is its relevance rank, so
                     # encode it as a bounded value rather than inventing one.
                     score=round(1.0 - (rank - 1) * 0.01, 4),

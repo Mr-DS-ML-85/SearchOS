@@ -36,3 +36,16 @@ class SearchProvider(ABC):
     @abstractmethod
     async def search(self, query: ProviderQuery) -> ProviderResult:
         raise NotImplementedError
+
+
+def domain_of(url: str) -> str:
+    """Host portion of a URL, or "" when it will not parse.
+
+    SearXNG populated this and the fallback providers did not, so results from
+    Tavily/Exa/Jina came back with `domain: null` and could not be filtered by
+    the caller.
+    """
+    import re
+
+    m = re.match(r"https?://([^/]+)", url or "")
+    return m.group(1) if m else ""

@@ -23,7 +23,9 @@ logger = get_logger("search.providers.searxng")
 
 
 class SearXNGProvider(SearchProvider):
-    name = "web"
+    # "searxng", not "web": the cascade owns the name "web", and a tier needs a
+    # distinct identity so sources=searxng can address it on its own.
+    name = "searxng"
 
     def __init__(self, session_factory: async_sessionmaker, url: str, timeout: float = 12.0) -> None:
         self.settings = get_settings()

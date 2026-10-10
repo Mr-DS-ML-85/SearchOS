@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     # so Tavily's deeper pass is not worth the latency in a fallback tier.
     tavily_search_depth: str = "basic"
     exa_api_key: str = ""
+    # Route Exa through its hosted MCP server (free, anonymous) rather than
+    # the REST API, which returns 402 x402 without a funded key.
+    exa_mcp_enabled: bool = True
+    exa_use_mcp: bool = True
+    exa_advanced: bool = False
     exa_timeout_seconds: float = 12.0
     jina_api_key: str = ""
     jina_timeout_seconds: float = 20.0
