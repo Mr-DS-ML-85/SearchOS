@@ -16,6 +16,17 @@ from app.search.snippets import build_snippet
 # silently stops being used and the query degrades to a sequential scan.
 DOC_TSVECTOR = "to_tsvector('english', coalesce(d.title,'') || ' ' || coalesce(d.content_text,''))"
 
+# Same expression under the `simple` regconfig, matching migration 0005 and
+# ix_documents_fts_simple. `english` stems and drops English stopwords, which
+# destroys documents written in other languages; `simple` is unstemmed and works
+# everywhere, at some cost to English recall. Queried second, as a fallback.
+DOC_TSVECTOR_SIMPLE = "to_tsvector('simple', coalesce(d.title,'') || ' ' || coalesce(d.content_text,''))"
+
+# Queried in order. English first so the common case uses the better stemmed
+# index; `simple` only runs when english found nothing, so an English query does
+# not pay for two index scans.
+_FTS_CONFIGS = (("english", DOC_TSVECTOR), ("simple", DOC_TSVECTOR_SIMPLE))
+
 # time_range windows. Previously this parameter was accepted and documented as a
 # "freshness filter" but never applied to the local or vector providers.
 # Seconds are used with make_interval() rather than a CAST(... AS interval)
@@ -110,39 +121,40 @@ class LocalIndexProvider(SearchProvider):
     async def _fts_search(self, query: ProviderQuery, *, or_fallback: bool = True) -> list:
         domain_sql, domain_params = self._domain_filters(query)
         time_sql, time_params = self._time_filter(query)
-        # Only the constant DOC_TSVECTOR is interpolated here; every caller-
-        # supplied value is a bound parameter. Documented here rather than with a
-        # noqa because a noqa cannot sit inside a triple-quoted SQL literal.
-        base = f"""
-            SELECT
-                d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at,
-                ts_rank_cd(
-                    {DOC_TSVECTOR},
-                    to_tsquery('english', :tsq)
-                ) AS fts_score
-            FROM documents d
-            WHERE d.status = 'indexed'
-              AND {DOC_TSVECTOR} @@ to_tsquery('english', :tsq)
-            """
         order = """
             ORDER BY fts_score DESC, d.fetched_at DESC NULLS LAST
             LIMIT :limit OFFSET :offset
         """
-        params = {"limit": query.num_results, "offset": query.offset}
+        params: dict = {"limit": query.num_results, "offset": query.offset}
         params.update(domain_params)
         params.update(time_params)
 
         rows: list = []
         async with self.session_factory() as session:
-            modes = ("AND", "OR") if or_fallback else ("AND",)
-            for mode in modes:
-                tsq = self._build_tsquery(query.q, mode)
-                if not tsq:
-                    continue
-                sql = text(base + domain_sql + time_sql + order)  # noqa: S608 - values bound
-                rows = (await session.execute(sql, {**params, "tsq": tsq})).mappings().all()
-                if rows:
-                    break
+            # english first, because it stems properly for English text, then
+            # `simple`, which does no stemming and no stopword removal and is the
+            # only configuration that works for documents in other languages.
+            # Falling through rather than running both keeps an English query to
+            # one index scan instead of two.
+            for config, expr in _FTS_CONFIGS:
+                # Only these two constants are interpolated; every caller-supplied
+                # value is a bound parameter.
+                base = f"""
+                    SELECT
+                        d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at,
+                        ts_rank_cd({expr}, to_tsquery('{config}', :tsq)) AS fts_score
+                    FROM documents d
+                    WHERE d.status = 'indexed'
+                      AND {expr} @@ to_tsquery('{config}', :tsq)
+                    """
+                for mode in ("AND", "OR") if or_fallback else ("AND",):
+                    tsq = self._build_tsquery(query.q, mode)
+                    if not tsq:
+                        continue
+                    sql = text(base + domain_sql + time_sql + order)  # noqa: S608 - values bound
+                    rows = (await session.execute(sql, {**params, "tsq": tsq})).mappings().all()
+                    if rows:
+                        return rows
         return rows
 
     def _build_tsquery(self, q: str, mode: str) -> str:

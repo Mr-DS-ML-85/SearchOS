@@ -147,6 +147,22 @@ DOC_TSVECTOR = func.to_tsvector(
 
 Document.__table__.append_constraint(Index("ix_documents_fts", DOC_TSVECTOR, postgresql_using="gin"))
 
+# A second index using the `simple` configuration. `english` applies stemming and
+# an English stopword list, which mangles most other languages outright — a
+# Bengali or Japanese query returns nothing because its tokens are stemmed away
+# or treated as stopwords. `simple` does no stemming and no stopword removal, so
+# it works for every language, at the cost of English recall. English is
+# therefore tried first and `simple` is the fallback.
+#
+# Keep this expression byte-identical to the constant used in
+# app/search/local_index.py for the same reason as above.
+DOC_TSVECTOR_SIMPLE = func.to_tsvector(
+    cast(literal_column("'simple'"), REGCONFIG),
+    func.coalesce(Document.title, "").op("||")(" " + func.coalesce(Document.content_text, "")),
+)
+
+Document.__table__.append_constraint(Index("ix_documents_fts_simple", DOC_TSVECTOR_SIMPLE, postgresql_using="gin"))
+
 # pgvector's HNSW access method takes the opclass as part of the column spec
 # (`USING hnsw (embedding vector_cosine_ops)`), not as a WITH parameter, and
 # neither SQLAlchemy nor pgvector's Vector type exposes an opclass option. The
