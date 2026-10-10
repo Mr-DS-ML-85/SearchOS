@@ -34,14 +34,29 @@ The MCP server is a **translator**, not a second API: the gateway exposes no MCP
 endpoint itself. Every tool above is a thin wrapper over one REST route, so
 anything added to the gateway needs adding here too or agents cannot reach it.
 
-### Paging and what the `search` result carries
+### Parity with the REST API
 
-The `search` tool returns `next_cursor`, `top_score`, `low_confidence`,
-`empty_providers` and `operators_applied` alongside the results. `next_cursor`
-used to be dropped by the tool's field whitelist even though the gateway sent
-it, so `has_more: true` came with no way to ask for the next page. Page by
-passing it back as `cursor`; combining `cursor` with `offset` is an error, and
-`offset` is `null` on a cursor page because the cursor carries its own.
+Every gateway route is either an MCP tool or deliberately excluded (the table
+above), and every query or body parameter of a wrapped route is accepted by its
+tool. `freshness` is the one omission: it is an alias of `time_range`, which the
+tool takes. Auth headers come from the server's configured keys.
+
+The `search` tool passes the gateway's response through unchanged, results
+included, so an MCP caller sees exactly the fields an API caller does
+(`next_cursor`, `min_score`, `cache_type`, the semantic-cache diagnostics,
+per-result `favicon` and `raw`, …). It used to build its output from a
+hand-kept whitelist, which fell behind the gateway field by field: `next_cursor`
+was dropped, so `has_more: true` came with no way to ask for the next page.
+
+`tests/test_api_mcp_parity.py` derives all of this from the gateway's OpenAPI
+schema and fails when a new route, parameter or response field is not reachable
+through MCP, so the two cannot drift silently again.
+
+### Paging
+
+Page by passing `next_cursor` back as `cursor`; combining `cursor` with `offset`
+is an error, and `offset` is `null` on a cursor page because the cursor carries
+its own.
 
 `search_images` takes exactly one of `query` and `image_url`. The schema cannot
 say so: Anthropic's tool API rejects a top-level `anyOf`, so the handler enforces

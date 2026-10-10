@@ -378,6 +378,23 @@ def _tools() -> list[types.Tool]:
     ]
 
 
+# Shown first so the page position and confidence read before the diagnostics.
+_SEARCH_HEADLINE = (
+    "query",
+    "total",
+    "returned",
+    "has_more",
+    "next_cursor",
+    "offset",
+    "took_ms",
+    "top_score",
+    "low_confidence",
+    "min_score",
+    "cache_hit",
+    "cache_type",
+)
+
+
 async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
     args = params.arguments or {}
     query = args.get("query")
@@ -442,61 +459,21 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
         )
     except GatewayError as e:
         return text_result(str(e), is_error=True)
-    results = [
-        {
-            "rank": r.get("rank"),
-            "source": r.get("source"),
-            "title": r.get("title"),
-            "url": r.get("url"),
-            "domain": r.get("domain"),
-            "snippet": r.get("snippet"),
-            "score": r.get("score"),
-            "published": r.get("published"),
-        }
-        for r in (body.get("results") or [])
-    ]
+    # Pass the gateway's response through instead of whitelisting fields. The
+    # whitelist had to be edited for every new gateway field and kept falling
+    # behind: next_cursor, cache_type and the semantic-cache diagnostics were
+    # each dropped in turn, and min_score and per-result favicon/raw still were.
+    # An MCP caller now sees exactly what an API caller sees.
+    out: dict[str, Any] = {key: body[key] for key in _SEARCH_HEADLINE if key in body}
+    out.update({key: value for key, value in body.items() if key != "results"})
+    out.setdefault("query", query)
+    # On a cursor page the offset lives inside the cursor; echoing the
+    # argument default (0) misreported where the page starts.
+    out["offset"] = None if cursor else offset
+    out["results"] = body.get("results") or []
     return text_result(
         json.dumps(
-            {
-                "query": body.get("query", query),
-                "total": body.get("total"),
-                "returned": body.get("returned", len(results)),
-                "has_more": body.get("has_more"),
-                # The tool schema tells agents to page with `cursor`, and the
-                # gateway returns one, but this whitelist dropped it: has_more
-                # said "there is a next page" with no way to ask for it.
-                "next_cursor": body.get("next_cursor"),
-                # On a cursor page the offset lives inside the cursor; echoing the
-                # argument default (0) misreported where the page starts.
-                "offset": None if cursor else offset,
-                "took_ms": body.get("took_ms"),
-                # Without these an agent cannot tell a weak match from an answer,
-                # or an upstream that returned nothing from one that never ran.
-                "top_score": body.get("top_score"),
-                "low_confidence": body.get("low_confidence"),
-                "empty_providers": body.get("empty_providers", []),
-                "operators_applied": body.get("operators_applied"),
-                "cache_hit": body.get("cache_hit"),
-                # The gateway distinguishes an exact cache hit from a semantic
-                # one (a rephrasing resolved by embedding). Whitelisting only
-                # cache_hit dropped that, so a semantic hit reported
-                # cache_hit=false and looked like a miss — including its
-                # latency, which is the thing worth seeing.
-                "cache_type": body.get("cache_type", "none"),
-                "semantic_cache_hit": body.get("semantic_cache_hit", False),
-                "semantic_cache_match": body.get("semantic_cache_match"),
-                "semantic_cache_similarity": body.get("semantic_cache_similarity"),
-                "degraded": body.get("degraded"),
-                "providers": body.get("providers"),
-                "provider_latency_ms": body.get("provider_latency_ms", {}),
-                "semantic_cache_closest_query": body.get("semantic_cache_closest_query"),
-                "semantic_cache_closest_similarity": body.get("semantic_cache_closest_similarity"),
-                "semantic_cache_threshold": body.get("semantic_cache_threshold"),
-                "semantic_cache_miss_reason": body.get("semantic_cache_miss_reason"),
-                "semantic_cache_runner_up_query": body.get("semantic_cache_runner_up_query"),
-                "semantic_cache_runner_up_similarity": body.get("semantic_cache_runner_up_similarity"),
-                "results": results,
-            },
+            out,
             indent=2,
             ensure_ascii=False,
         )
