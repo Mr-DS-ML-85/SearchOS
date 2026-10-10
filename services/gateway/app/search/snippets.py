@@ -80,11 +80,15 @@ def build_snippet(content: str, query: str, length: int = DEFAULT_LENGTH) -> Sni
 
     start = max(0, anchor - length // 6)
     end = min(len(text), start + length)
-    window = text[start:end].strip()
-    if start > 0:
-        window = "…" + window
-    if end < len(text):
-        window += "…"
+    # The ellipses count toward `length`. They used to be added after the cut,
+    # so a window clipped on both sides came back at length + 2.
+    lead = "…" if start > 0 else ""
+    tail = "…" if end < len(text) else ""
+    core = text[start:end].strip()
+    if len(core) > length - len(lead) - len(tail):
+        tail = "…"
+        core = core[: length - len(lead) - len(tail)].rstrip()
+    window = lead + core + tail
 
     matched = [t for t in terms if t in lowered[anchor : anchor + length]]
     return Snippet(text=window, highlights=sorted(set(matched)), matched=True)

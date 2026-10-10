@@ -161,11 +161,6 @@ async def backfill_missing_vectors(session_factory: async_sessionmaker, *, limit
     return len(chunks)
 
 
-# SearXNG stores at most this many characters of a snippet; anything longer
-# flagged as a snippet was replaced by a fetched page.
-_SNIPPET_MAX_CHARS = 300
-
-
 async def repair_enriched_snippets(session_factory: async_sessionmaker, *, limit: int) -> int:
     """Re-index documents whose content was enriched without being re-derived.
 
@@ -177,6 +172,7 @@ async def repair_enriched_snippets(session_factory: async_sessionmaker, *, limit
     from types import SimpleNamespace
 
     from app.search.providers.searxng import SNIPPET_META_FLAG
+    from app.search.web_persist import SNIPPET_MAX_CHARS
     from app.workers.ingest import index_document
 
     async with session_factory() as session:
@@ -185,7 +181,7 @@ async def repair_enriched_snippets(session_factory: async_sessionmaker, *, limit
                 await session.scalars(
                     select(Document)
                     .where(Document.meta[SNIPPET_META_FLAG].astext == "true")
-                    .where(func.length(Document.content_text) > _SNIPPET_MAX_CHARS)
+                    .where(func.length(Document.content_text) > SNIPPET_MAX_CHARS)
                     .limit(limit)
                 )
             ).all()

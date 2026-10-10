@@ -68,6 +68,11 @@ export TEST_REDIS_URL=redis://127.0.0.1:16380/0
 python -m pytest -q tests
 ```
 
+> The integration fixture **TRUNCATEs** `documents`, `chunks`, `api_keys` and
+> `ingest_jobs` before every test. Point `TEST_DATABASE_URL` only at a throwaway
+> database like the container above, never at the stack's own Postgres.
+
+
 MCP protocol tests drive the real SDK against a live gateway on all three
 transports (stdio, legacy HTTP+SSE, Streamable HTTP):
 

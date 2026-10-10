@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 330 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 334 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -59,7 +59,7 @@ SearchOS builds a production-grade, fully self-hosted search API from open-sourc
 - **Late-interaction ranking (ColBERT)** — optional, token-level MaxSim scoring blended with the cross-encoder. A single pooled vector per chunk can only express "how similar are the centroids"; MaxSim asks how much of the query is covered at token level. **Off by default, and measured as a regression on this corpus** — see *Late interaction* below.
 - **Federated search** — query several SearchOS instances at once and merge with RRF, so a URL several independent indexes return scores higher than one only a single index found. Dead peers are skipped with a cooldown instead of adding their timeout to every query.
 - **Web fallback cascade** — SearXNG is primary; when it fails, is rate-limited, or returns an empty SERP, the request falls through to **Google** (when Proxify is configured), **Tavily** (free, no account needed), **Exa** (via its hosted MCP server), then **Jina**. The first tier that answers wins, and an exhausted chain opens a cooldown so a request never pays every dead upstream's timeout.
-- **Live web fallback that learns** — when local coverage is thin, SearXNG results are merged in, **saved into your index, and re-crawled**, so repeat queries are served instantly without re-hitting the web.
+- **Live web fallback that learns** — when local coverage is thin, live results are merged in, **saved into your index, and re-crawled**, so repeat queries are served instantly without re-hitting the web. This applies to **every** web provider (SearXNG, Google, Tavily, Exa, Jina), not only SearXNG, and saves are **deduplicated**: once per page within a response, never over a crawled page, and the longer snippet wins between providers.
 - **Google via Proxify (optional)** — with a self-hosted [Proxify](https://github.com/Mr-DS-ML-85/proxify) gateway, Google web results join the cascade (or are pinned with `sources=google`) and Google Images become available. Pages are fetched in Proxify's VM browser; Google's encrypted `/goto` result links are resolved to their real destinations. **No captcha solving**: every request opts out of Proxify's solver, and a challenge page counts as a failed tier.
 - **Fetch fallback** — when the renderer and a direct GET both fail with something a different client could get past (403, 429, 5xx, timeout, anti-bot interstitial), extraction and crawling retry once through Proxify. A 404, robots.txt disallow or egress-policy refusal is never retried.
 - **Semantic query cache** — a rephrased query ("consensus in distributed systems" → "how does paxos agree") resolves through the cache instead of re-running the pipeline: ~18s became ~10–20ms. Scoped by source and by every filter that changes the answer (domains, language, time range, operators, ColBERT), so a cached whole-corpus answer can never satisfy a pinned-provider or filtered query.
@@ -206,10 +206,10 @@ claude mcp list    # shows "✔ Connected"
 1. `GET /v1/search?q=...` arrives. Redis cache lookup — 5 min TTL, or 30s for an empty/low-confidence response so a transient miss does not pin itself.
 2. Query router fans out in parallel to `local` (FTS), `vector` (pgvector cosine), and `web` (the fallback cascade).
 3. **SearXNG is skipped** when the local index has ≥ `SEARXNG_LOCAL_MIN_HITS` (default 3) fresh strict matches — otherwise live results are fetched.
-4. Reciprocal Rank Fusion merges + **dedupes by normalized URL** (indexed copies preferred over web snippets).
+4. Reciprocal Rank Fusion merges + **dedupes by normalized URL** (indexed copies preferred over web snippets). The key keeps identifying query parameters (`?id=`, `?v=`) and drops tracking ones (`utm_*`, `gclid`, `fbclid`, …).
 5. **A cross-encoder rescores the fused candidates.** The previous reranker only multiplied the fused score by title/freshness boosts, so every candidate kept the same magnitude and nothing separated a good match from noise. Scores are now relevance logits — see *Reranking* below.
 6. Results below `RERANK_MIN_SCORE` are dropped. If the best survivor is under `RERANK_LOW_CONFIDENCE_SCORE`, the response is flagged `low_confidence` so a caller can distinguish "the index does not cover this" from "here is the best of a weak set".
-7. Web results are persisted to the index, and the top `SEARCH_ENRICH_TOP_N` URLs (default 15) are enqueued for snippet enrichment / full-page crawl.
+7. Results from every web provider are persisted to the index as snippet documents (deduplicated, see [docs/searxng.md](docs/searxng.md#result-persistence)), and the top `SEARCH_ENRICH_TOP_N` URLs (default 15) are enqueued for snippet enrichment / full-page crawl.
 8. Response includes `providers`, `degraded`, `top_score`, `low_confidence`, and timing.
 
 > **Note on caching.** The search/extract result cache is **Redis**-backed (DB 1;
@@ -568,6 +568,11 @@ export TEST_DATABASE_URL=postgresql+asyncpg://searchos:searchos@127.0.0.1:15432/
 export TEST_REDIS_URL=redis://127.0.0.1:16380/0
 make test
 ```
+
+> The integration fixture **TRUNCATEs** `documents`, `chunks`, `api_keys` and
+> `ingest_jobs` before every test. Point `TEST_DATABASE_URL` only at a throwaway
+> database like the container above, never at the stack's own Postgres.
+
 
 Assets are generated from `tools/`:
 

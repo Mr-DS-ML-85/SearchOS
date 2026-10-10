@@ -18,6 +18,7 @@ from app.search.operators import parse as parse_query
 from app.search.rerank import Reranker, get_cross_encoder
 from app.search.semantic_cache import SemanticCache
 from app.search.simhash import near_duplicate, to_signed
+from app.search.web_persist import WEB_PROVIDERS, persist_web_results
 
 logger = get_logger("search")
 
@@ -389,6 +390,21 @@ class SearchOrchestrator:
             raise ProviderError(
                 f"All search providers failed: {', '.join(sorted(degraded))}" + (f" ({detail})" if detail else "")
             )
+
+        # Every live-web answer goes into the index, whichever tier produced it.
+        # Only SearXNG used to persist (inside its own provider), so a query
+        # served by Google, Tavily, Exa or Jina taught the index nothing.
+        web_results = [r for name, rows in by_provider.items() if name in WEB_PROVIDERS for r in rows]
+        if web_results:
+            try:
+                from app.db import get_session_factory
+
+                saved = await persist_web_results(get_session_factory(), web_results)
+                logger.debug("persisted web results: %s", saved)
+            except Exception as exc:
+                # Persistence is a side effect; losing it must not lose the query.
+                get_metrics().provider_errors.labels(provider="web", kind="persist").inc()
+                logger.warning("web result persist failed: %s: %s", exc.__class__.__name__, exc)
 
         fused = reciprocal_rank_fusion(by_provider)
         # Total matches are known before the reranker truncates anything.

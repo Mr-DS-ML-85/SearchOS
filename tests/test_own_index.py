@@ -7,9 +7,21 @@ from app.extract.render import should_render
 from app.workers.ingest import normalize_url
 
 
-def test_normalize_url_strips_query_and_fragment():
-    url = "https://Example.com/path/?utm_source=x#section"
+def test_normalize_url_strips_tracking_params_and_fragment():
+    url = "https://Example.com/path/?utm_source=x&fbclid=y#section"
     assert normalize_url(url) == "https://example.com/path"
+
+
+def test_normalize_url_keeps_identifying_query():
+    """?id= / ?v= *are* the document; dropping them merged distinct pages."""
+    a = normalize_url("https://news.ycombinator.com/item?id=1")
+    b = normalize_url("https://news.ycombinator.com/item?id=2")
+    assert a != b
+    assert a == "https://news.ycombinator.com/item?id=1"
+
+
+def test_normalize_url_sorts_query():
+    assert normalize_url("https://e.com/p?b=2&a=1") == normalize_url("https://e.com/p?a=1&b=2&utm_medium=x")
 
 
 def test_normalize_url_keeps_trailing_slash_path():

@@ -23,11 +23,41 @@ So a cold query (or one about a niche topic the index doesn't cover) hits SearXN
 
 ## Result persistence
 
-When SearXNG returns results for a query:
+When **any** web provider returns results (SearXNG, Google, Tavily, Exa or Jina,
+whether reached through the `web` cascade or pinned):
 
 1. Results are returned to the caller (mixed with local results, deduped by normalized URL — see below).
-2. The top `SEARCH_ENRICH_TOP_N` result URLs (default 15) are enqueued for **snippet enrichment**, and the page itself is persisted as `source='web'` in `documents` (with metadata `{"searxng_snippet": true, "engine": "<engine>"}`).
-3. The worker may fully crawl a web result, upgrading it to a first-class indexed document.
+2. Every result is saved as a snippet document (`source='web'`, `meta` =
+   `{"searxng_snippet": true, "provider": "<tier>", "engine": "<engine>"}`; the
+   flag keeps its historical name). This happens once, in the orchestrator
+   (`app/search/web_persist.py`). It used to happen inside the SearXNG provider
+   only, so a query answered by any other tier taught the index nothing.
+3. The top `SEARCH_ENRICH_TOP_N` result URLs (default 15) are enqueued for **snippet enrichment**, which fetches each page and indexes it fully (chunks, vectors, language, SimHash) and clears the snippet flag.
+4. Snippet documents not reached by enrichment get chunks and vectors from the backfill loop.
+
+Federated results are **not** saved: they come from another SearchOS index, which owns them.
+
+### Dedupe when saving
+
+1. **Within one response**, by normalized URL. Two providers, or one provider
+   twice, returning `https://www.example.com/a/` and `https://example.com/a` save
+   one row. (A single duplicate used to fail the whole write: Postgres rejects an
+   `INSERT … ON CONFLICT DO UPDATE` that touches the same row twice.)
+2. **Against the index**, by the unique `normalized_url`:
+   - a crawled, ingested or enriched page is **never** overwritten by a snippet;
+   - an existing snippet is updated, keeping the **longer** text, so a richer
+     upstream's snippet is not replaced by a terser one; `meta.provider` records
+     the latest provider.
+3. **Near-duplicate content** at different URLs (syndicated copies, mirrors) is
+   collapsed at query time by SimHash once pages are enriched. Snippets are too
+   short for SimHash to be meaningful, so they are deduped by URL only.
+
+Check what was saved:
+
+```sql
+select meta->>'provider' as provider, count(*)
+from documents where meta->>'searxng_snippet' = 'true' group by 1;
+```
 
 The next time you search for the same thing, the answers come from **your** index, and SearXNG is not contacted again (rate-limiter friendly).
 
@@ -38,7 +68,20 @@ re-query "milvus cognee"  →  3 results, all src=local, no network hit
 
 ## Dedup across providers
 
-`services/gateway/app/search/fusion.py` merges provider results by **normalized URL** (lowercased host with any `www.` prefix and default port removed, path without a trailing slash; query string and fragment dropped):
+`services/gateway/app/search/fusion.py` merges provider results by **normalized URL**, the same key the index uses (`normalize_url` in `app/workers/ingest.py`):
+
+- host lowercased, `www.` and default ports removed; scheme kept (an http-only site may differ from its https twin);
+- path without a trailing slash; fragment dropped;
+- query string **kept**, minus tracking parameters (`utm_*`, `gclid`, `dclid`, `fbclid`, `msclkid`, `yclid`, `igshid`, `mc_cid`, `mc_eid`, `_hsenc`, `_hsmi`, `ref_src`), sorted.
+
+The query used to be dropped entirely, which merged distinct pages: every
+`help.salesforce.com/s/articleView?id=…` article, every Hacker News `item?id=`
+and every YouTube `watch?v=` became one document (the second overwrote the
+first) and one search result. Migration `0010` re-keyed the 33 affected rows
+and queued them for recrawl, since an overwritten row's content could belong to
+a different URL than its own.
+
+Effects:
 
 - duplicate URLs → single entry
 - an **indexed** (local/vector) copy is preferred over the live web snippet

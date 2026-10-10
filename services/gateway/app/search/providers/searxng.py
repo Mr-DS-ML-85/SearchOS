@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
 import re
 import time
-import uuid
 from datetime import UTC, datetime
 
 import httpx
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import get_settings
@@ -15,8 +12,6 @@ from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
-from app.search.langdetect import language_name
-from app.workers.ingest import normalize_url
 
 SNIPPET_META_FLAG = "searxng_snippet"
 
@@ -101,60 +96,12 @@ class SearXNGProvider(SearchProvider):
                 )
             )
 
-        if result.results:
-            try:
-                await self._persist(raw_results[: query.num_results])
-            except Exception as e:
-                logger.warning("searxng persist failed: %s", e)
-                get_metrics().provider_errors.labels(provider=self.name, kind="persist").inc()
+        # Persistence happens once in the orchestrator for every web provider
+        # (app/search/web_persist.py), not here.
 
         result.latency_ms = (time.monotonic() - start) * 1000
         get_metrics().search_duration.labels(provider=self.name).observe(result.latency_ms / 1000)
         return result
-
-    async def _persist(self, raw_results: list[dict]) -> None:
-        rows = []
-        for item in raw_results:
-            url = item.get("url") or ""
-            if not url:
-                continue
-            rows.append(
-                {
-                    "id": uuid.uuid4(),
-                    "url": url,
-                    "norm": normalize_url(url),
-                    "title": item.get("title") or url,
-                    "content": (item.get("content") or "")[:300],
-                    # Stored as the detector's names ("french"), which is what
-                    # the language filter compares against; SearXNG reports
-                    # ISO codes ("fr", "fr-FR").
-                    "lang": language_name(item.get("language")),
-                    "published": self._parse_dt(item.get("publishedDate") or item.get("published_date")),
-                    "meta": json.dumps({"searxng_snippet": True, "engine": item.get("engine")}),
-                }
-            )
-        if not rows:
-            return
-        sql = text(
-            """
-            INSERT INTO documents (id, url, normalized_url, title, content_text, lang, source,
-                                   published_at, fetched_at, status, meta)
-            VALUES (:id, :url, :norm, :title, :content, :lang, 'web', :published, now(), 'indexed', CAST(:meta AS jsonb))
-            ON CONFLICT (normalized_url) DO UPDATE SET
-                title = EXCLUDED.title,
-                content_text = EXCLUDED.content_text,
-                fetched_at = now(),
-                meta = EXCLUDED.meta
-            WHERE documents.meta->>'searxng_snippet' = 'true'
-            """
-        )
-        async with self.session_factory() as session:
-            result = await session.execute(sql, rows)
-            await session.commit()
-        # Only count rows that were actually inserted, not conflict-skipped ones.
-        inserted = result.rowcount if result.rowcount and result.rowcount >= 0 else 0
-        if inserted:
-            get_metrics().documents_indexed.inc(inserted)
 
     async def _local_hits(self, q: str, limit: int) -> list:
         from app.search.local_index import LocalIndexProvider

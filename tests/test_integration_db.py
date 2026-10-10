@@ -66,6 +66,12 @@ def _doc(normalized: str, **kwargs):
     return Document(**defaults)
 
 
+def _web(url: str, title: str, snippet: str, *, source: str = "searxng"):
+    from app.schemas import SearchResult
+
+    return SearchResult(title=title, url=url, snippet=snippet, source=source, score=1.0, rank=1)
+
+
 class TestLocalIndexSQL:
     async def test_fts_matches_stemmed_terms(self, session_factory):
         """'running' must match 'run' via the english stemmer."""
@@ -437,10 +443,9 @@ class TestVectorIndexSQL:
 class TestSearXNGPersistence:
     async def test_does_not_clobber_fully_crawled_document(self, session_factory):
         """A snippet upsert must not overwrite a real crawled body."""
-        from app.search.providers.searxng import SearXNGProvider
+        from app.search.web_persist import persist_web_results
         from sqlalchemy import text
 
-        provider = SearXNGProvider(session_factory, "http://searxng.test", 5.0)
         long_body = "REAL CRAWLED CONTENT " * 500
 
         async with session_factory() as s:
@@ -454,7 +459,7 @@ class TestSearXNGPersistence:
             )
             await s.commit()
 
-        await provider._persist([{"url": "https://site.com/p", "title": "Snippet title", "content": "short snippet"}])
+        await persist_web_results(session_factory, [_web("https://site.com/p", "Snippet title", "short snippet")])
 
         async with session_factory() as s:
             row = (
@@ -472,10 +477,8 @@ class TestSearXNGPersistence:
         assert row["title"] != "Snippet title"
 
     async def test_updates_a_previous_snippet_stub(self, session_factory):
-        from app.search.providers.searxng import SearXNGProvider
+        from app.search.web_persist import persist_web_results
         from sqlalchemy import text
-
-        provider = SearXNGProvider(session_factory, "http://searxng.test", 5.0)
 
         async with session_factory() as s:
             s.add(
@@ -487,7 +490,7 @@ class TestSearXNGPersistence:
             )
             await s.commit()
 
-        await provider._persist([{"url": "https://site.com/q", "title": "New title", "content": "new snippet"}])
+        await persist_web_results(session_factory, [_web("https://site.com/q", "New title", "new snippet")])
 
         async with session_factory() as s:
             row = (
@@ -503,11 +506,10 @@ class TestSearXNGPersistence:
         assert row["content_text"] == "new snippet"
 
     async def test_inserts_when_absent(self, session_factory):
-        from app.search.providers.searxng import SearXNGProvider
+        from app.search.web_persist import persist_web_results
         from sqlalchemy import text
 
-        provider = SearXNGProvider(session_factory, "http://searxng.test", 5.0)
-        await provider._persist([{"url": "https://new.com/a", "title": "T", "content": "C"}])
+        await persist_web_results(session_factory, [_web("https://new.com/a", "T", "C", source="tavily")])
 
         async with session_factory() as s:
             count = (
@@ -516,6 +518,44 @@ class TestSearXNGPersistence:
                 )
             ).scalar()
         assert count == 1
+
+    async def test_duplicate_in_one_batch_does_not_fail_the_write(self, session_factory):
+        """ON CONFLICT DO UPDATE cannot touch one row twice; a dupe failed the batch."""
+        from app.search.web_persist import persist_web_results
+        from sqlalchemy import text
+
+        counts = await persist_web_results(
+            session_factory,
+            [
+                _web("https://dup.com/a", "first", "x"),
+                _web("https://www.dup.com/a/", "same page", "y", source="google"),
+                _web("https://dup.com/b", "other", "z"),
+            ],
+        )
+        assert counts["inserted"] == 2 and counts["batch_duplicates"] == 1
+        async with session_factory() as s:
+            n = (await s.execute(text("SELECT count(*) FROM documents WHERE url LIKE '%dup.com%'"))).scalar()
+        assert n == 2
+
+    async def test_second_provider_keeps_the_longer_snippet(self, session_factory):
+        from app.search.web_persist import persist_web_results
+        from sqlalchemy import text
+
+        await persist_web_results(session_factory, [_web("https://two.com/p", "T", "a much longer snippet text")])
+        counts = await persist_web_results(session_factory, [_web("https://two.com/p", "T", "short", source="tavily")])
+        assert counts["updated"] == 1
+        async with session_factory() as s:
+            row = (
+                (
+                    await s.execute(
+                        text("SELECT content_text, meta FROM documents WHERE normalized_url = 'https://two.com/p'")
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        assert row["content_text"] == "a much longer snippet text"
+        assert row["meta"]["provider"] == "tavily"
 
 
 class TestOrchestratorAgainstDB:
@@ -585,10 +625,12 @@ class TestDeduplication:
         assert normalize_url("https://example.com:443/path") == canonical
         assert normalize_url("http://example.com:80/path") == normalize_url("http://example.com/path")
 
-    def test_query_and_fragment_are_dropped(self):
+    def test_fragment_and_tracking_dropped_identifying_query_kept(self):
+        """Dropping the whole query merged ?id=1 and ?id=2 into one document."""
         from app.workers.ingest import normalize_url
 
-        assert normalize_url("https://example.com/p?a=1#x") == "https://example.com/p"
+        assert normalize_url("https://example.com/p?a=1#x") == "https://example.com/p?a=1"
+        assert normalize_url("https://example.com/p?utm_source=x#x") == "https://example.com/p"
 
     def test_distinct_paths_stay_distinct(self):
         from app.workers.ingest import normalize_url

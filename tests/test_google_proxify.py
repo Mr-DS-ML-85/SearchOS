@@ -164,3 +164,68 @@ def test_mcp_exposes_google(mcp):
     tools = {t.name: t for t in mcp._tools()}
     assert "google" in tools["search"].input_schema["properties"]["sources"]["enum"]
     assert tools["search_images"].input_schema["properties"]["source"]["enum"] == ["local", "google"]
+
+
+# --- every web provider's results reach the index ---------------------------------
+
+
+def test_build_rows_dedupes_by_normalized_url_and_keeps_identifying_query():
+    from app.schemas import SearchResult
+    from app.search.web_persist import build_rows
+
+    def r(url, source="tavily"):
+        return SearchResult(title="t", url=url, snippet="s" * 500, source=source, score=1, rank=1)
+
+    rows, dupes = build_rows(
+        [
+            r("https://news.ycombinator.com/item?id=1"),
+            r("https://news.ycombinator.com/item?id=2"),
+            r("https://www.news.ycombinator.com/item?id=1&utm_source=x"),
+            r("ftp://not-web.example/x"),
+        ]
+    )
+    assert [row["norm"] for row in rows] == [
+        "https://news.ycombinator.com/item?id=1",
+        "https://news.ycombinator.com/item?id=2",
+    ]
+    assert dupes == 1
+    assert len(rows[0]["content"]) == 300
+    assert '"provider": "tavily"' in rows[0]["meta"] and '"searxng_snippet": true' in rows[0]["meta"]
+
+
+async def test_orchestrator_persists_every_web_tier_but_not_the_index(monkeypatch, cache):
+    from app.schemas import SearchRequest, SearchResult
+    from app.search import orchestrator as orch_mod
+    from app.search.orchestrator import SearchOrchestrator
+
+    saved: list = []
+
+    async def fake_persist(session_factory, results):
+        saved.extend(results)
+        return {"inserted": len(results)}
+
+    monkeypatch.setattr(orch_mod, "persist_web_results", fake_persist)
+    monkeypatch.setattr("app.db.get_session_factory", lambda: None)
+
+    class P:
+        def __init__(self, name, source):
+            self.name, self.source = name, source
+
+        async def search(self, query):
+            return ProviderResult(
+                provider=self.name,
+                query=query.q,
+                results=[
+                    SearchResult(
+                        title="t", url=f"https://{self.source}.com/x", snippet="s", source=self.source, score=1, rank=1
+                    )
+                ],
+            )
+
+    orch = SearchOrchestrator(
+        providers={"local": P("local", "local"), "web": P("web", "tavily"), "federated": P("federated", "peer")},
+        cache=cache,
+    )
+    orch.settings.rerank_enabled = False
+    await orch.search(SearchRequest(q="persist me", cache=False))
+    assert [r.url for r in saved] == ["https://tavily.com/x"]

@@ -31,16 +31,43 @@ logger = get_logger("workers.ingest")
 _LINK_RE = re.compile(r'<a[^>]+href=["\']\s*([^"\' >\s]+)["\']', re.IGNORECASE)
 
 
+# Query parameters that identify a click, not a document. Everything else in
+# the query string is kept: it often *is* the document (?id=, ?v=, ?p=).
+_TRACKING_PARAMS = frozenset(
+    {
+        "gclid",
+        "dclid",
+        "fbclid",
+        "msclkid",
+        "yclid",
+        "igshid",
+        "mc_cid",
+        "mc_eid",
+        "_hsenc",
+        "_hsmi",
+        "ref_src",
+    }
+)
+
+
 def normalize_url(url: str) -> str:
-    """Canonical key for dedupe: lowercases host, drops default port and 'www.'.
+    """Canonical key for dedupe, shared by the index and search-time fusion.
 
-    Previously http vs https, :443, and the ``www.`` prefix all produced
-    different keys for the same page, so the same document could be indexed
-    several times (docs/searxng.md claimed www. was stripped; it was not).
+    - host lowercased, ``www.`` and default ports dropped;
+    - scheme kept: an http-only site may differ from its https twin, so they
+      are deliberately not merged;
+    - trailing slash and fragment dropped;
+    - query string **kept**, minus tracking parameters, sorted.
+
+    The query used to be dropped entirely, so every
+    ``help.salesforce.com/s/articleView?id=...`` article, every Hacker News
+    ``item?id=`` and every YouTube ``watch?v=`` collapsed into one document — the
+    second overwrote the first in the index, and fusion merged them into a single
+    search result.
     """
-    from urllib.parse import urlsplit
+    from urllib.parse import parse_qsl, urlencode, urlsplit
 
-    parsed = urlsplit(url)
+    parsed = urlsplit(url.strip())
     scheme = (parsed.scheme or "http").lower()
     host = (parsed.hostname or "").lower()
     if host.startswith("www."):
@@ -51,10 +78,16 @@ def normalize_url(url: str) -> str:
         port = None
     if port is not None and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
         host = f"{host}:{port}"
-    path = parsed.path or ""
-    path = path.rstrip("/")
-    base = f"{scheme}://{host}"
-    return f"{base}{path}" if path else base
+    path = (parsed.path or "").rstrip("/")
+    params = sorted(
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if not k.lower().startswith("utm_") and k.lower() not in _TRACKING_PARAMS
+    )
+    key = f"{scheme}://{host}{path}"
+    if params:
+        key += "?" + urlencode(params)
+    return key
 
 
 _DATE_FORMATS = (

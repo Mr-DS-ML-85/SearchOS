@@ -75,7 +75,7 @@ re-indexed 50 enriched snippet documents
 backfill pass: {'chunks_created': 61, 'vectors_filled': 0, 'snippets_repaired': 50}
 ```
 
-A document saved from a SearXNG result (a snippet) waits for the next backfill
+A document saved from a web result (a snippet, from any web provider) waits for the next backfill
 pass to get chunks, up to `BACKFILL_INTERVAL_SECONDS` when the loop is idle.
 
 ## Politeness
