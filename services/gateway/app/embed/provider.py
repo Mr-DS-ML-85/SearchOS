@@ -34,6 +34,14 @@ class EmbeddingProvider:
     async def embed_one(self, text: str) -> list[float]:
         return (await self.embed([text]))[0]
 
+    def warm(self) -> bool:
+        """Load the model synchronously so the first query does not block on it."""
+        try:
+            self._load_model()
+            return True
+        except Exception:
+            return False
+
     @property
     def available(self) -> bool:
         try:

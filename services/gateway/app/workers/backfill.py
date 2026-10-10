@@ -176,15 +176,24 @@ async def backfill_loop(session_factory: async_sessionmaker) -> None:
     Startup matters: the common case is an operator enabling embeddings on an
     existing corpus, and waiting an hour for the first pass would look like the
     rebuild did nothing.
+
+    While work remains the loop keeps cycling rather than sleeping the full
+    interval, because the alternative was clearing 363 chunk-less documents at
+    50 per hour — roughly seven hours before vector search covered the corpus.
     """
     settings = get_settings()
     while True:
         try:
             result = await run_backfill(session_factory)
-            if any(result.values()):
+            worked = any(result.values())
+            if worked:
                 logger.info("backfill pass: %s", result)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("backfill pass failed: %s: %s", exc.__class__.__name__, exc)
-        await asyncio.sleep(settings.backfill_interval_seconds)
+            worked = False
+        if worked:
+            await asyncio.sleep(settings.backfill_drain_interval_seconds)
+        else:
+            await asyncio.sleep(settings.backfill_interval_seconds)

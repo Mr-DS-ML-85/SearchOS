@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 
 from app.config import get_settings
@@ -16,10 +17,67 @@ def query_terms(query: str) -> set[str]:
     return {t for t in TERM_RE.findall(query.lower()) if len(t) > 1}
 
 
-class Reranker:
-    """Heuristic reordering on top of fused candidates.
+class CrossEncoderReranker:
+    """Semantic reranking with a cross-encoder over (query, document) pairs.
 
-    Final score = fused_rrf * title_boost * freshness_boost * domain_weight * engine_weight
+    The heuristic reranker multiplies a fused score by boosts. Every candidate
+    then keeps the reciprocal-rank-fusion magnitude, so good and bad matches
+    clustered within a hair of each other (0.016 vs 0.017) and a nonsense query
+    returned the same confident-looking rows as a real one.
+
+    A cross-encoder reads the query and the document together and emits a
+    calibrated relevance score, which is what makes a threshold meaningful.
+    """
+
+    def __init__(self, model_name: str, *, batch_size: int = 32) -> None:
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self._model = None
+        self._loaded = False
+
+    @property
+    def loaded(self) -> bool:
+        return self._model is not None
+
+    def _ensure_model(self):
+        if self._loaded:
+            return self._model
+        self._loaded = True
+        try:
+            from sentence_transformers import CrossEncoder
+
+            self._model = CrossEncoder(self.model_name)
+        except Exception:
+            self._model = None
+        return self._model
+
+    def score(self, query: str, pairs: list[tuple[str, str]]) -> list[float]:
+        """Return one relevance score per (title, snippet) pair."""
+        model = self._ensure_model()
+        if model is None:
+            return []
+        payload = [(query, f"{title}\n\n{snippet}") for title, snippet in pairs]
+        try:
+            raw = model.predict(payload, batch_size=self.batch_size, show_progress_bar=False)
+        except Exception:
+            return []
+        # Returned raw, as the cross-encoder's relevance logit. Squashing it
+        # through a sigmoid looks friendlier but saturates: measured on this
+        # corpus, relevant queries scored 4.94-9.34 and nonsense 1.16, which
+        # sigmoid collapses to 0.995-1.0 and 0.76 — a gap far too narrow to put
+        # a threshold in. The logit scale is what actually separates them.
+        return [float(x) for x in raw]
+
+    def warm(self) -> bool:
+        """Load the model up front so the first query does not pay for it."""
+        return self._ensure_model() is not None
+
+
+class Reranker:
+    """Reorder fused candidates, preferring a cross-encoder when one is available.
+
+    Final score is the cross-encoder relevance when available, otherwise the
+    fused score scaled by the heuristic boosts.
     """
 
     def __init__(
@@ -29,38 +87,54 @@ class Reranker:
         top_k: int = 20,
         domain_weights: dict[str, float] | None = None,
         engine_weights: dict[str, float] | None = None,
+        cross_encoder: CrossEncoderReranker | None = None,
     ) -> None:
         self.enabled = enabled
         self.top_k = top_k
         self.domain_weights = domain_weights or {}
         self.engine_weights = engine_weights or {}
+        self.cross_encoder = cross_encoder
+
+    def _boost(self, query: str, r: SearchResult) -> float:
+        terms = query_terms(query)
+        title_terms = query_terms(r.title or "")
+        overlap = len(terms & title_terms)
+
+        if overlap >= 2:
+            title_boost = 1.5
+        elif overlap == 1:
+            title_boost = 1.2
+        else:
+            title_boost = 1.0
+
+        published_boost = 1.05 if r.published else 1.0
+        domain_weight = self.domain_weights.get((r.domain or "").lower(), 1.0)
+        engine_weight = self.engine_weights.get((r.source or "").lower(), 1.0)
+        return title_boost * published_boost * domain_weight * engine_weight
+
+    async def rerank_async(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
+        if not self.enabled or not results:
+            return results
+
+        if self.cross_encoder is not None:
+            scores = await asyncio.to_thread(
+                self.cross_encoder.score,
+                query,
+                [(r.title or "", r.snippet or "") for r in results],
+            )
+            if scores and len(scores) == len(results):
+                for r, score in zip(results, scores, strict=True):
+                    r.score = round(score, 6)
+                return sorted(results, key=lambda x: x.score, reverse=True)[: self.top_k]
+
+        return self.rerank(query, results)
 
     def rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
         if not self.enabled or not results:
             return results
 
-        terms = query_terms(query)
         for r in results:
-            title_terms = query_terms(r.title or "")
-            overlap = len(terms & title_terms)
-
-            if overlap >= 2:
-                title_boost = 1.5
-            elif overlap == 1:
-                title_boost = 1.2
-            else:
-                title_boost = 1.0
-
-            # Presence of a date only, not recency: ranking by age would make
-            # scores non-reproducible for identical documents.
-            published_boost = 1.05 if r.published else 1.0
-            domain_weight = self.domain_weights.get((r.domain or "").lower(), 1.0)
-            engine_weight = self.engine_weights.get((r.source or "").lower(), 1.0)
-
-            r.score = round(
-                r.score * title_boost * published_boost * domain_weight * engine_weight,
-                6,
-            )
+            r.score = round(r.score * self._boost(query, r), 6)
 
         ranked = sorted(results, key=lambda x: x.score, reverse=True)
         return ranked[: self.top_k]
@@ -68,4 +142,7 @@ class Reranker:
 
 def build_reranker(settings=None) -> Reranker:
     cfg = settings or get_settings()
-    return Reranker(enabled=cfg.rerank_enabled, top_k=cfg.rerank_top_k)
+    cross_encoder = (
+        CrossEncoderReranker(cfg.rerank_model, batch_size=cfg.rerank_batch_size) if cfg.rerank_model else None
+    )
+    return Reranker(enabled=cfg.rerank_enabled, top_k=cfg.rerank_top_k, cross_encoder=cross_encoder)

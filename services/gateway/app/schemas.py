@@ -93,6 +93,18 @@ class SearchResponse(BaseModel):
     cache_hit: bool
     degraded: list[str]
     providers: list[str]
+    top_score: float | None = Field(
+        None,
+        description="Highest relevance score in this page; None when nothing cleared the threshold",
+    )
+    low_confidence: bool = Field(
+        False,
+        description=(
+            "True when no result cleared the low-confidence bar. The corpus may simply "
+            "not cover the query; treat these results as a weak match rather than an answer."
+        ),
+    )
+    min_score: float | None = Field(None, description="Relevance cutoff applied to this query")
 
 
 class ExtractRequest(BaseModel):

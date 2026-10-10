@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "searchos": {
-      "command": "python",
+      "command": "/path/to/.venv/bin/python",
       "args": ["/path/to/services/mcp/searchos_mcp.py", "--transport", "stdio"],
       "env": {
-        "SEARCHOS_URL": "http://localhost:8000",
+        "SEARCHOS_URL": "http://127.0.0.1:8000",
         "SEARCHOS_API_KEY": "sk_...",
         "SEARCHOS_ADMIN_KEY": "sk_..."
       }

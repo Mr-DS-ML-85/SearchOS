@@ -10,7 +10,7 @@ from app.metrics import get_metrics
 from app.schemas import SearchRequest, SearchResponse, SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.search.fusion import reciprocal_rank_fusion
-from app.search.rerank import Reranker
+from app.search.rerank import CrossEncoderReranker, Reranker
 
 
 @dataclass
@@ -26,7 +26,15 @@ class SearchOrchestrator:
         if self.cache is None:
             self.cache = get_cache()
         if self.reranker is None:
-            self.reranker = Reranker(enabled=self.settings.rerank_enabled, top_k=self.settings.rerank_top_k)
+            self.reranker = Reranker(
+                enabled=self.settings.rerank_enabled,
+                top_k=self.settings.rerank_top_k,
+                cross_encoder=(
+                    CrossEncoderReranker(self.settings.rerank_model, batch_size=self.settings.rerank_batch_size)
+                    if self.settings.rerank_model
+                    else None
+                ),
+            )
 
     def select_providers(self, sources: str) -> list[SearchProvider]:
         if sources == "all":
@@ -119,7 +127,17 @@ class SearchOrchestrator:
 
         # Never let the reranker cap results below what the caller asked for.
         self.reranker.top_k = max(self.settings.rerank_top_k, window)
-        ranked = self.reranker.rerank(req.q, fused)
+        ranked = await self.reranker.rerank_async(req.q, fused)
+
+        # Drop rows the reranker scored as irrelevant. Only meaningful once a
+        # cross-encoder produced the scores: the heuristic keeps every fused
+        # score near 0.016, so cutting there would empty every result set.
+        min_score = self.settings.rerank_min_score
+        if self.reranker.cross_encoder is not None and self.reranker.cross_encoder.loaded:
+            ranked = [r for r in ranked if r.score >= min_score]
+            total = len(ranked)
+
+        low_confidence = not ranked or ranked[0].score < self.settings.rerank_low_confidence_score
 
         # The one and only pagination slice.
         results = ranked[offset : offset + req.num_results]
@@ -142,6 +160,9 @@ class SearchOrchestrator:
             cache_hit=False,
             degraded=degraded,
             providers=sorted(by_provider.keys()),
+            top_score=results[0].score if results else None,
+            low_confidence=low_confidence,
+            min_score=min_score if ranked else None,
         )
 
         # Cache even when a provider is degraded: the remaining providers' output

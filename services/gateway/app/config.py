@@ -97,6 +97,20 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     rerank_enabled: bool = True
     rerank_top_k: int = 20
+    # Cross-encoder model. Empty disables semantic reranking and falls back to
+    # the heuristic boosts, whose scores are all near-identical and therefore
+    # cannot support a meaningful relevance threshold.
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
+    rerank_batch_size: int = 32
+    # Thresholds are in cross-encoder logit units, not 0-1. Measured on this corpus
+    # with ms-marco-MiniLM-L6-v2: relevant queries scored 4.94-9.34, nonsense 1.16
+    # and below. A sigmoid squashed that to 0.995-1.0 vs 0.76, too narrow to cut on.
+    # Retune if rerank_model changes.
+    rerank_min_score: float = 3.0
+    # When the best surviving score is under this, the response is flagged
+    # low-confidence so a caller can tell "nothing here matches" from "here are the
+    # best of a weak set".
+    rerank_low_confidence_score: float = 4.5
 
     search_cache_ttl_seconds: int = 300
     extract_cache_ttl_seconds: int = 3600
@@ -134,6 +148,10 @@ class Settings(BaseSettings):
     backfill_enabled: bool = True
     backfill_interval_seconds: float = 3600.0
     backfill_batch_size: int = 50
+    # Delay between passes while work remains. Draining at one batch per
+    # backfill_interval took hours on a corpus with hundreds of chunk-less
+    # documents.
+    backfill_drain_interval_seconds: float = 2.0
 
     crawler_follow_links: bool = True
     crawler_max_depth: int = 2

@@ -82,6 +82,46 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
     init_engine()
     logger = get_logger("app")
+
+    # Load the embedding and rerank models before serving. Previously the first
+    # query paid for both, blocking for ~10s and timing the client out — which
+    # surfaced as a dropped connection rather than a slow response.
+    def _preload_embeddings() -> None:
+        from app.embed.provider import get_embedding_provider
+
+        get_embedding_provider().warm()
+
+    async def _warm_models() -> None:
+        """Load embedding and rerank models off the request path.
+
+        Both are loaded lazily otherwise, so the first search blocked on a model
+        download and timed clients out — which read as a dropped connection
+        rather than a slow response.
+        """
+        if settings.embedding_model:
+            try:
+                await asyncio.to_thread(_preload_embeddings)
+                logger.info("embedding model warm: %s", settings.embedding_model)
+            except Exception as exc:
+                logger.warning("embedding model warm failed: %s: %s", exc.__class__.__name__, exc)
+        if settings.rerank_enabled and settings.rerank_model:
+            try:
+                from app.search.rerank import CrossEncoderReranker
+
+                ce = CrossEncoderReranker(settings.rerank_model, batch_size=settings.rerank_batch_size)
+                if await asyncio.to_thread(ce.warm):
+                    logger.info("rerank model warm: %s", settings.rerank_model)
+                else:
+                    logger.warning(
+                        "rerank model %s unavailable; falling back to heuristic scores, "
+                        "which cannot support a relevance threshold",
+                        settings.rerank_model,
+                    )
+            except Exception as exc:
+                logger.warning("rerank model warm failed: %s: %s", exc.__class__.__name__, exc)
+
+    warm = asyncio.create_task(_warm_models())
+
     sampler = asyncio.create_task(_sample_queue_depth())
     try:
         for attempt in range(5):
@@ -118,6 +158,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        warm.cancel()
         sampler.cancel()
         await close_http_client()
         await close_cache()

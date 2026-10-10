@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "searchos": {
+      "command": "/home/you/.nvm/versions/node/vXX/bin/node",
+      "args": [
+        "/home/you/.nvm/versions/node/vXX/lib/node_modules/mcp-remote/dist/proxy.js",
+        "http://127.0.0.1:8099/mcp",
+        "--header",
+        "Authorization: Bearer sk_..."
+      ],
+      "env": {
+        "SEARCHOS_URL": "http://127.0.0.1:8000",
+        "SEARCHOS_API_KEY": "sk_...",
+        "SEARCHOS_ADMIN_KEY": "sk_..."
+      }
+    }
+  }
+}
