@@ -57,8 +57,19 @@ docker compose --profile web up -d searxng
 ```
 
 SearXNG is the primary web tier. Tavily joins the cascade with no credentials at all
-(keyless access), so a fresh install already has a fallback; Exa and Jina add more depth
-with a key. See [Web fallback chain](searxng.md).
+(keyless access), and Exa answers keyless over its hosted MCP server, so a fresh install
+already has a fallback; Jina adds more depth with a key. See [Web fallback chain](searxng.md).
+
+### Optional: Google search via Proxify
+
+If you run [Proxify](https://github.com/Mr-DS-ML-85/proxify), start SearchOS with its
+overlay to get Google web and image search, plus Proxify as the fallback page fetcher:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.proxify.yml up -d
+```
+
+See [Google through Proxify](searxng.md#google-through-proxify).
 
 To also serve the MCP endpoint over HTTP:
 
@@ -120,15 +131,20 @@ curl -s -G "http://localhost:8000/v1/images/search" \
 
 Pass `image_url=` instead of `q=` to find images like another image. Both
 directions are the same endpoint because CLIP embeds text and images into one
-space.
+space. Text queries drop matches below a similarity floor, so a query nothing in
+the index depicts returns no images (with `below_min_score` counting what was
+dropped) rather than the nearest unrelated ones.
+
+With Proxify configured, add `source=google` to search Google Images instead.
 
 Check `image_search_available` in the response — `false` means the `images`
 extra (Pillow) is not installed, which is a degraded mode rather than an empty
 index.
 
-> Both endpoints lazy-load their model on first use, so the first query after a
-> fresh start is slow (seconds) and later ones are fast. Weights are cached on
-> the `modelcache` volume, so this cost is paid once per rebuild, not per query.
+> Models are warmed at gateway startup when their weights are already on the
+> `modelcache` volume, so queries after a restart are fast. On a brand-new volume
+> the first query downloads the weights once (seconds to minutes); after that
+> they are cached across rebuilds.
 
 ## 7. Connect an agent via MCP
 

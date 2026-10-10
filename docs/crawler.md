@@ -49,6 +49,35 @@ indexed https://en.wikipedia.org/wiki/Machine_learning (68 chunks)
 
 After the refresh the document is fresh again, so it won't be re-enqueued until it ages past the threshold.
 
+## Fetching, enrichment and backfill
+
+Every page the worker fetches (ingest, recrawl and snippet enrichment) goes
+through the same fetcher as `/v1/extract`: the headless renderer, then a direct
+GET, then Proxify when `PROXIFY_URL` is set and the failure is retryable (403,
+429, 5xx, timeout, anti-bot interstitial). A robots.txt disallow, a 404 or an
+egress-policy refusal is never retried through Proxify.
+
+**Snippet enrichment** fetches the top `SEARCH_ENRICH_TOP_N` URLs of each search
+and indexes them through the same path as ingest, so an enriched page gets
+chunks, vectors, a language and a SimHash like any crawled page.
+
+**Backfill** runs every `BACKFILL_INTERVAL_SECONDS` and keeps cycling every
+`BACKFILL_DRAIN_INTERVAL_SECONDS` while it finds work. Each pass:
+
+1. re-indexes documents still flagged as SearXNG snippets but holding more than
+   a snippet's 300 characters (left behind by the old enrichment path);
+2. chunks and embeds indexed documents that have no chunks (empty documents are
+   skipped, since they can never produce one);
+3. fills chunks that have no vector.
+
+```
+re-indexed 50 enriched snippet documents
+backfill pass: {'chunks_created': 61, 'vectors_filled': 0, 'snippets_repaired': 50}
+```
+
+A document saved from a SearXNG result (a snippet) waits for the next backfill
+pass to get chunks, up to `BACKFILL_INTERVAL_SECONDS` when the loop is idle.
+
 ## Politeness
 
 The worker claims one job at a time with no delay between requests to the same

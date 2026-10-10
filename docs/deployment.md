@@ -45,6 +45,40 @@ indexed. The worker's `backfill` loop drains the gap in the background:
 docker compose logs -f worker | grep backfill
 ```
 
+### Google search and fetch fallback through Proxify (optional)
+
+With a [Proxify](https://github.com/Mr-DS-ML-85/proxify) gateway running as its own
+compose project, add the overlay so the gateway and worker can reach it:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.proxify.yml up -d --build
+```
+
+This enables the `google` cascade tier, `/v1/images/search?source=google`, and the
+fetch fallback. Use the overlay on **every** later `up`, too: a plain
+`docker compose up` recreates the containers without `PROXIFY_URL`, and Google and
+the fallback silently switch off. Check connectivity from both containers:
+
+```bash
+docker exec searchos-gateway-1 python -c "import urllib.request;print(urllib.request.urlopen('http://proxy-orchestrator:8081/health').read()[:40])"
+docker exec searchos-worker-1  python -c "import urllib.request;print(urllib.request.urlopen('http://proxy-orchestrator:8081/health').read()[:40])"
+```
+
+Settings are listed in [SearXNG fallback → Google through Proxify](searxng.md#google-through-proxify).
+
+### Code is baked into the images
+
+Host edits are not mounted. After changing gateway or worker code, rebuild and
+recreate; for the MCP container, copy the file in and restart:
+
+```bash
+docker compose build gateway worker && docker compose up -d gateway worker
+docker cp services/mcp/searchos_mcp.py searchos-mcp-1:/srv/mcp/searchos_mcp.py && docker restart searchos-mcp-1
+```
+
+A setting in `.env` reaches a container only if it is also listed under that
+service's `environment:` in `docker-compose.yml`.
+
 Tear down without losing data: `docker compose down` (keep volumes). Full reset: `docker compose down -v`.
 
 ## Health gates
@@ -105,6 +139,9 @@ searchos.example.com {
 | SearXNG 429s | you hit a live instance repeatedly; SearXNG saves results so re-queries go local |
 | worker idle with pending jobs | restart worker; check `worker.log` for claim errors |
 | renderer missing | ingest falls back to plain fetch; install the renderer for heavy-JS sites |
+| `sources=google` returns "No search provider is configured" | `PROXIFY_URL` is unset in the gateway: the stack was started without `docker-compose.proxify.yml` |
+| extract fails with "proxify fallback also failed" | both fetchers failed; the message carries each reason. A 404 or robots.txt refusal never reaches Proxify |
+| first image query slow after a restart | CLIP weights not in the `modelcache` volume yet, so startup skipped the warm-up; the first query downloads them once |
 | cold-start search latency | first SearXNG hit is slow (2–3s); subsequent same-query hits are instant + cached |
 
 ## Local dev (no Docker hostnames)

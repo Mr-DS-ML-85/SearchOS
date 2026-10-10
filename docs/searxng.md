@@ -67,9 +67,10 @@ select meta from documents where source = 'web' limit 3;
 order and the first that answers wins:
 
 1. **SearXNG** — primary
-2. **Tavily** — free without any account via `X-Tavily-Access-Mode: keyless`
-3. **Exa** — requires a key; the REST API returns 402 without one
-4. **Jina** — requires a key; `s.jina.ai` returns 401 without one
+2. **Google** — only when `PROXIFY_URL` is set; see *Google through Proxify* below
+3. **Tavily** — free without any account via `X-Tavily-Access-Mode: keyless`
+4. **Exa** — no key needed over its hosted MCP server; the REST API returns 402 without a funded key
+5. **Jina** — requires a key; `s.jina.ai` returns 401 without one
 
 Exa is reached over its hosted **MCP** server (`mcp.exa.ai/mcp`), not its REST
 API: REST returns `402 x402 payment-required` without a funded key, while the
@@ -79,6 +80,10 @@ MCP endpoint answers anonymously under a rate limit. Set `EXA_API_KEY` with
 A tier that answers with zero results does not stop the chain: it counts as a
 miss and the next tier is tried, since an empty SERP is usually a rate limit
 rather than a genuine "nothing exists".
+
+Concurrent searches run the chain in parallel. The cascade's lock used to wrap
+the whole tier loop, so every live-web search in the process waited for the one
+ahead of it; it now guards only the cooldown check.
 
 When every tier fails the cascade opens a cooldown
 (`SEARCH_CASCADE_COOLDOWN_SECONDS`, default 30) and returns immediately for that
@@ -108,8 +113,8 @@ curl -s "http://localhost:8000/v1/search?q=tokio&sources=exa&cache=false"     -H
 curl -s "http://localhost:8000/v1/search?q=tokio&sources=searxng&cache=false" -H "Authorization: Bearer $KEY"
 ```
 
-Accepted values are `all`, `local`, `vector`, `web` (the cascade), and the
-four tier names. A tier that is not configured returns an error rather than
+Accepted values are `all`, `local`, `vector`, `web` (the cascade), `federated`,
+and the tier names (`searxng`, `google`, `tavily`, `exa`, `jina`). A tier that is not configured returns an error rather than
 silently falling back, so an empty result means the upstream genuinely had
 none — `degraded` in the response names any tier that errored.
 
@@ -117,6 +122,62 @@ SearXNG intermittently returns **zero results** with no error when its own
 upstream engines are suspended or rate-limited; `docker compose logs searxng`
 shows the suspensions. That is exactly the case the cascade exists for: `web`
 treats an empty answer as a miss and descends to the next tier.
+
+## Google through Proxify
+
+[Proxify](https://github.com/Mr-DS-ML-85/proxify) is a self-hosted fetch gateway
+that runs a headful Chrome in a virtual display, carrying the operator's own
+browser session. With `PROXIFY_URL` set, SearchOS uses it for Google web search
+(a cascade tier, pinnable as `sources=google`), Google Images
+(`/v1/images/search?source=google`), and as the fallback page fetcher (see the
+API reference, `POST /v1/extract`).
+
+How a Google query runs:
+
+1. The results page is fetched in Proxify's VM browser (`PROXIFY_BROWSER`,
+   default `gui_chrome`). `language`, `country`, `time_range` and the domain
+   filters become `hl`, `gl`, `tbs=qdr:*` and `site:` / `-site:` operators.
+2. Google now emits result links as `/goto?url=<token>`, and the token is
+   encrypted: the destination only exists as the redirect target. Each kept link
+   is followed once through Proxify's cheap `simple` strategy
+   (`PROXIFY_RESOLVE_BROWSER`), 5 at a time. A link that does not resolve is
+   dropped rather than returned as a google.com URL.
+
+Measured: ~10.5s for the results page, ~1s per link resolution in parallel,
+about 12–16s per query in total. That is why Google sits **after** SearXNG by
+default; `GOOGLE_CASCADE_POSITION=first` puts it first.
+
+**No captcha solving.** Proxify's `/fetch` runs its captcha bridge on a challenge
+page unless the request carries `X-Orchestrator-Challenge-Solve: skip`. Every
+request SearchOS sends carries it, and a challenge or `/sorry/` page is reported
+as a failed tier, so the cascade moves on. Nothing retries a blocked page. Note
+that Proxify currently forwards that header to the target as well.
+
+### Enabling
+
+Proxify runs as its own compose project on its own network, so the gateway and
+worker join that network through an opt-in overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.proxify.yml up -d
+```
+
+The overlay sets `PROXIFY_URL=http://proxy-orchestrator:8081` and joins
+`proxy-orchestrator_default` (override with `PROXIFY_URL` / `PROXIFY_NETWORK`).
+Proxify must already be running, because the network is external. A plain
+`docker compose up` leaves Google and the fetch fallback disabled.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PROXIFY_URL` | — | Proxify API; empty disables Google and the fetch fallback |
+| `PROXIFY_BROWSER` | `gui_chrome` | strategy for Google results pages |
+| `PROXIFY_RESOLVE_BROWSER` | `simple` | strategy for following `/goto` links |
+| `PROXIFY_TIMEOUT_SECONDS` | `45` | budget for a results page |
+| `PROXIFY_RESOLVE_CONCURRENCY` | `5` | parallel link resolutions |
+| `GOOGLE_CASCADE_POSITION` | `after_searxng` | or `first` |
+| `PROXIFY_FETCH_FALLBACK` | `true` | retry failed page fetches through Proxify |
+| `PROXIFY_FETCH_BROWSER` | — (auto) | strategy for fallback fetches; empty lets Proxify escalate |
+| `PROXIFY_FETCH_TIMEOUT_SECONDS` | `45` | budget for a fallback fetch |
 
 ## Notes
 

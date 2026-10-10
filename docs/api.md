@@ -128,19 +128,24 @@ the same query.
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | — | search query (required) |
-| `sources` | `all` \| `local` \| `vector` \| `web` \| `searxng` \| `tavily` \| `exa` \| `jina` | `all` | providers to query. `web` is the whole fallback cascade; the other four pin one upstream |
+| `sources` | `all` \| `local` \| `vector` \| `web` \| `searxng` \| `google` \| `tavily` \| `exa` \| `jina` \| `federated` | `all` | providers to query. `web` is the whole fallback cascade; a tier name pins one upstream and errors instead of falling back. `google` exists only when `PROXIFY_URL` is set |
 | `num_results` | int 1–50 | 10 | results to return |
-| `language` | string | — | e.g. `en`, `de` |
-| `country` | string | — | e.g. `us` |
-| `time_range` | `day` \| `week` \| `month` \| `year` \| `all` | `all` | freshness filter |
+| `language` | ISO 639-1, e.g. `en`, `fr`, `fr-CA` | — | indexed results are restricted to documents detected as that language; web tiers receive it as a locale. Documents whose language could not be detected are excluded, and an unknown code matches nothing |
+| `country` | ISO 3166, e.g. `ca` | — | combined with `language` into a web locale (`fr` + `ca` → `fr-CA`) and sent to Google as `gl`. Indexed documents carry no country, so it has no effect on local/vector results |
+| `time_range` | `day` \| `week` \| `month` \| `year` \| `all` | `all` | freshness filter, applied to every provider |
+| `freshness` | same values | — | alias for `time_range`; an explicit `time_range` wins |
 | `domains` | repeated or comma list | — | restrict to these domains |
 | `exclude_domains` | repeated or comma list | — | exclude these domains |
 | `offset` | int 0–1000 | 0 | pagination offset |
+| `cursor` | string | — | `next_cursor` from the previous page; see *Pagination* |
 | `cache` | bool | `true` | enable the Redis result cache |
+| `colbert` | bool | server default | force late-interaction reranking on/off for this query |
 
 Both list parameters accept `?domains=a.com&domains=b.com` and
-`?domains=a.com,b.com` interchangeably. They are matched as substrings of the
-stored URL with `LIKE` metacharacters escaped, so `domains=%` matches nothing.
+`?domains=a.com,b.com` interchangeably. They match the URL's **host**:
+`example.com` matches `example.com` and `docs.example.com`, but not
+`notexample.com` or `example.com.evil.net`. The filters apply to the local,
+vector and web providers alike; the vector provider used to ignore them.
 
 Example:
 
@@ -167,6 +172,7 @@ curl -s "http://localhost:8000/v1/search?q=hnsw+gpu&num_results=5&sources=all" \
   "total": 4,
   "returned": 4,
   "has_more": false,
+  "next_cursor": null,
   "offset": 0,
   "took_ms": 176,
   "cache_hit": false,
@@ -177,6 +183,15 @@ curl -s "http://localhost:8000/v1/search?q=hnsw+gpu&num_results=5&sources=all" \
   "min_score": 3.0
 }
 ```
+
+Fields beyond the obvious:
+
+| Field | Meaning |
+|---|---|
+| `next_cursor` | pass back as `cursor` for the next page; `null` on the last page |
+| `empty_providers` | providers that answered successfully with zero results. Not in `degraded` (they worked), but distinguishable from never having run |
+| `operators_applied` | the parsed `site:` / `filetype:` / phrase / negation operators, when the query had any |
+| `provider_latency_ms` | wall time per provider; empty on a cache hit |
 
 ### Relevance scoring
 
@@ -235,6 +250,17 @@ curl -s -X POST http://localhost:8000/v1/extract \
 ```
 
 Returns clean, LLM-ready content. Respects robots.txt (`FETCH_RESPECT_ROBOTS`), follows redirects, handles HTML (trafilatura), PDF (pypdf), and plain text. Cached 1 hour.
+
+`fetched_via` says which fetcher produced the page: `native` (the headless
+renderer, then a direct GET) or `proxify`. When Proxify is configured
+(`PROXIFY_URL`) and the native fetch fails with something a different client
+could get past (403, 429, 5xx, a timeout, a connection error, or a 200 that is
+really an anti-bot interstitial), the page is fetched once more through Proxify.
+It is **not** retried for a 404, a robots.txt disallow, an egress-policy refusal
+or an oversize page; those are answers, and a proxy must not override robots or
+the SSRF guard. Proxify's landing URL is re-checked against the egress policy.
+If both fail, the error names both reasons. The same fallback applies to crawls
+and snippet enrichment, which use the same fetcher.
 
 ## `POST /v1/admin/ingest` (admin)
 
@@ -296,6 +322,34 @@ Images are discovered on indexed pages automatically: the crawler takes the
 largest-declared `<img>` candidates (not the first N, which on a typical page is
 the logo and edit shields), skips SVG and icon assets, drops anything below
 `image_min_dimension`, and embeds what survives.
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `q` | string | — | text query (text-to-image) |
+| `image_url` | string | — | reference image (image-to-image) |
+| `limit` | int 1–50 | 10 | images to return |
+| `source` | `local` \| `google` | `local` | `local` is CLIP over crawled images; `google` is Google Images via Proxify |
+
+Pass exactly one of `q` and `image_url`; both together is a 422 (previously
+`image_url` won and the text was silently discarded).
+
+**Relevance floor.** Text queries drop matches below `min_score`
+(`IMAGE_TEXT_MIN_SCORE`, default 0.24). CLIP ViT-B/32 scores a caption against a
+matching photo around 0.28–0.32 and against an unrelated one around 0.18–0.22,
+so without a floor a query with no matching image returned the nearest unrelated
+ones. `below_min_score` counts what was dropped: an empty `images` with a
+non-zero count means nothing indexed depicts the query. Image-to-image has no
+floor; its similarities live on a different scale.
+
+**Latency.** CLIP is warmed at gateway startup when its weights are already in
+the local Hugging Face cache, so the first image query on each worker no longer
+pays a 4–7s load. It is never downloaded at startup. Measured warm: text 13–33ms,
+image-to-image ~1.7s (mostly fetching the reference image).
+
+**`source=google`** fetches Google Images in Proxify's VM browser (~11s). `url`
+is Google's thumbnail (full-size URLs are not in the results page), `alt_text`
+the title, and `source_url` the page the image appears on. Text queries only.
+Scores encode Google's order; Google gives no similarity.
 
 Requires the `images` extra (Pillow). `image_search_available` in the response is
 `false` when it is not installed — that is a degraded mode, not an empty index,
@@ -382,11 +436,16 @@ restarts. The semantic cache embeds the query and reuses a recent answer for a
 agents that rephrase.
 
 Measured with `bge-small-en-v1.5`: paraphrases of an answered query score
-0.945–0.958 and are reused; a different topic scores ~0.50 and is not. The
-threshold is `SEMANTIC_CACHE_THRESHOLD`, default 0.92 — high enough that a
-merely-related question cannot borrow an unrelated answer. Verified that
-"rust tokio async runtime" and "rust tokio runtime" share an answer (0.945) while
-"vector database search" does not.
+0.86–0.95 and are reused; related but different questions score 0.56–0.69 and
+are not. The threshold is `SEMANTIC_CACHE_THRESHOLD`, default **0.80** (it was
+0.92, which rejected real paraphrases; see *Why the threshold is 0.80* above).
+
+A semantic hit is scoped by everything that changes the answer, not only
+`sources`: domains, exclude_domains, language, country, time_range, phrase and
+filetype operators, and the ColBERT setting. A filtered query can no longer be
+served an unfiltered neighbour's page. A snapshot is also only reused when it
+covers the requested page size, so a 3-result snapshot cannot answer a request
+for 10.
 
 Responses served from the semantic cache carry `semantic_cache_hit`,
 `semantic_cache_match` and `semantic_cache_similarity` so a caller can tell a
@@ -397,8 +456,17 @@ never remembered — a weak answer is the one most likely to be wrong.
 
 `offset` is capped and works, but costs grow linearly because OFFSET makes
 Postgres walk and discard every skipped row. For deep paging pass the
-`next_cursor` from a previous response back as `cursor`; an invalid cursor is a
-422 rather than a silent fallback to page 1.
+`next_cursor` from a previous response back as `cursor`; it is `null` on the
+last page.
+
+A cursor is bound to the query and filters that produced it. Reusing one with a
+different query, or the same query with different `domains`, `language`,
+`time_range` or similar, is a 422 rather than a silent jump to an arbitrary row.
+So is a malformed cursor.
+
+Each page is cached under its own `offset` and `num_results`. The key used to
+be the window end alone, so `offset=5&num_results=5` was served the cached
+answer to `offset=0&num_results=10`.
 
 ## Ops endpoints
 
@@ -408,7 +476,7 @@ Postgres walk and discard every skipped row. For deep paging pass the
 | `GET /health/live` | process alive |
 | `GET /health/ready` | Postgres / Redis / renderer readiness |
 | `GET /metrics` | Prometheus `searchos_*` metrics |
-| `GET /stats` | `{documents, chunks, api_keys, ingest_pending, uptime_seconds}` |
+| `GET /stats` | `documents`, `chunks`, `api_keys`, `ingest_pending`, `uptime_seconds`, plus index completeness: `documents_without_chunks`, `chunks_with_embedding`, `chunks_without_embedding`, `embedding_coverage` (share of documents with at least one vector), `vector_search_available` |
 
 ## Errors
 
@@ -430,4 +498,4 @@ Every error response uses one envelope:
 
 ## MCP
 
-The same functionality is exposed to agents as MCP tools (`search`, `extract`, `ingest`, `stats`, `health`) — see [MCP server](mcp.md).
+The same functionality is exposed to agents as MCP tools (`search`, `search_images`, `extract`, `suggest`, `popular`, `recent`, `ingest`, `cache_flush`, `stats`, `health`) — see [MCP server](mcp.md).

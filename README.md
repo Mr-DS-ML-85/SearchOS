@@ -4,7 +4,7 @@
 
 <p align="center">
   <b>Self-hosted search API for AI agents.</b><br/>
-  Your own FTS + vector index, image search, late-interaction ranking, federated peers, live web fallback, continuous recursive crawler, and an MCP server — no vendor lock-in, no per-query fees, no data leaving your infra.
+  Your own FTS + vector index, image search, late-interaction ranking, federated peers, live web fallback (optionally Google, through a self-hosted Proxify gateway), continuous recursive crawler, and an MCP server — no vendor lock-in, no per-query fees, no data leaving your infra.
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 276 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 330 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -44,23 +44,25 @@ SearchOS builds a production-grade, fully self-hosted search API from open-sourc
 | Rate limits | hourly caps | credits | plan caps | RPM/TPM | **your own quotas** |
 | Privacy | vendor sees queries | vendor sees queries | vendor sees queries | vendor sees queries | **your infra only** |
 | Result source | Google | own index | neural index | own index | **your own crawler + index** |
-| Live web fallback | yes | — | — | — | **yes (SearXNG, self-cached)** |
+| Live web fallback | yes | — | — | — | **yes (SearXNG → Google → Tavily → Exa → Jina, self-cached)** |
 | LLM-ready output | no | yes | yes | yes | **yes (clean text/markdown)** |
 | Content extraction | no | yes | yes | yes | **yes (robots-respecting)** |
 | MCP server | — | — | — | — | **yes (stdio + SSE + Streamable HTTP)** |
-| Image / multimodal search | — | — | limited | limited | **yes (CLIP, text→image + image→image)** |
+| Image / multimodal search | — | — | limited | limited | **yes (CLIP text→image + image→image, plus Google Images)** |
 | Own your data | no | no | no | no | **yes (full index export)** |
 
 ## Features
 
 - **Own search index** — Postgres FTS (`ts_rank_cd`, english config) + pgvector HNSW embeddings, fused with Reciprocal Rank Fusion.
 - **Cross-encoder reranking** — candidates are rescored by a real relevance model (`cross-encoder/ms-marco-MiniLM-L6-v2`), so good and bad matches no longer return near-identical scores. Results below a threshold are dropped and weak result sets are flagged `low_confidence`.
-- **Image and multimodal search** — CLIP embeds images and text into one vector space, so `/v1/images/search` finds images by *what they depict* from a text query, or finds images like another image. Images are discovered while crawling; icons, SVGs and undersized assets are filtered out.
+- **Image and multimodal search** — CLIP embeds images and text into one vector space, so `/v1/images/search` finds images by *what they depict* from a text query, or finds images like another image. Images are discovered while crawling; icons, SVGs and undersized assets are filtered out. Text queries apply a measured similarity floor, so a query nothing depicts returns no images instead of the nearest unrelated ones. `source=google` searches Google Images instead (with Proxify).
 - **Late-interaction ranking (ColBERT)** — optional, token-level MaxSim scoring blended with the cross-encoder. A single pooled vector per chunk can only express "how similar are the centroids"; MaxSim asks how much of the query is covered at token level. **Off by default, and measured as a regression on this corpus** — see *Late interaction* below.
 - **Federated search** — query several SearchOS instances at once and merge with RRF, so a URL several independent indexes return scores higher than one only a single index found. Dead peers are skipped with a cooldown instead of adding their timeout to every query.
-- **Web fallback cascade** — SearXNG is primary; when it fails, is rate-limited, or returns an empty SERP, the request falls through to **Tavily** (free, no account needed), **Exa** (via its hosted MCP server), then **Jina**. The first tier that answers wins, and an exhausted chain opens a cooldown so a request never pays every dead upstream's timeout.
+- **Web fallback cascade** — SearXNG is primary; when it fails, is rate-limited, or returns an empty SERP, the request falls through to **Google** (when Proxify is configured), **Tavily** (free, no account needed), **Exa** (via its hosted MCP server), then **Jina**. The first tier that answers wins, and an exhausted chain opens a cooldown so a request never pays every dead upstream's timeout.
 - **Live web fallback that learns** — when local coverage is thin, SearXNG results are merged in, **saved into your index, and re-crawled**, so repeat queries are served instantly without re-hitting the web.
-- **Semantic query cache** — a rephrased query ("consensus in distributed systems" → "how does paxos agree") resolves through the cache instead of re-running the pipeline: ~18s became ~10–20ms. Scoped by source and filters so a cached whole-corpus answer can never satisfy a pinned-provider query.
+- **Google via Proxify (optional)** — with a self-hosted [Proxify](https://github.com/Mr-DS-ML-85/proxify) gateway, Google web results join the cascade (or are pinned with `sources=google`) and Google Images become available. Pages are fetched in Proxify's VM browser; Google's encrypted `/goto` result links are resolved to their real destinations. **No captcha solving**: every request opts out of Proxify's solver, and a challenge page counts as a failed tier.
+- **Fetch fallback** — when the renderer and a direct GET both fail with something a different client could get past (403, 429, 5xx, timeout, anti-bot interstitial), extraction and crawling retry once through Proxify. A 404, robots.txt disallow or egress-policy refusal is never retried.
+- **Semantic query cache** — a rephrased query ("consensus in distributed systems" → "how does paxos agree") resolves through the cache instead of re-running the pipeline: ~18s became ~10–20ms. Scoped by source and by every filter that changes the answer (domains, language, time range, operators, ColBERT), so a cached whole-corpus answer can never satisfy a pinned-provider or filtered query.
 - **Search operators** — `site:`, `-site:`, `filetype:`, quoted phrases, and plain-term `OR`. Domain restrictions from operators and from the `domains=` / `exclude_domains=` parameters are resolved **centrally** and re-applied to every provider, not just the local index — a tier that ignored them returned dictionary-definition sites for `site:wikipedia.org`, which looks like an answer rather than a filter failure.
 - **Query-aware snippets** — the snippet is the passage around your query terms, not the first paragraph of the page. A sliding window is scored against the query and the best-scoring one is returned, so a result shows the sentence that made it a match instead of the site's boilerplate intro. Falls back to the leading window when nothing matches, and to an empty snippet when there is no content.
 - **Near-duplicate detection** — a 64-bit SimHash per document collapses syndicated copies at query time, so a corpus that re-publishes one press release does not return it six times.
@@ -68,8 +70,8 @@ SearchOS builds a production-grade, fully self-hosted search API from open-sourc
 - **Crawl politeness** — the worker fetches one job at a time with no delay between requests to the same host, so a recursive crawl of a docs site fires requests as fast as the network allows — which is how a crawler gets blocked, and blocking one origin can take out the whole seed. Every outbound fetch passes a per-origin gate that honours `robots.txt`'s `Crawl-delay` when declared and `CRAWLER_MIN_DELAY_SECONDS` otherwise, so an origin that omits the directive is still throttled. The schedule lives in **Redis**, so all workers share it and a restart cannot reset an origin's window and immediately re-burst against it.
 - **Per-language full-text search** — a second GIN FTS index using the `simple` configuration covers languages whose stemmers Postgres does not ship, alongside the english-configured index. Documents are language-detected and stored in a per-language tsvector, so a German document is not matched by English stemming rules. Detection is **script-first, stopwords-second**: a Unicode range identifies Bengali or Japanese outright, and stopword voting is only trusted for Latin script, which is genuinely ambiguous. Pure-stopword heuristics mislabelled 218 of 742 English documents as Bengali.
 - **Embedding backfill** — enabling embeddings on an existing corpus drains missing vectors in the background, so documents indexed while the embedder was unavailable are not stranded without semantic search.
-- **LLM-ready extraction** — clean markdown/text/json from HTML, PDF, and JS-rendered pages (headless renderer), robots.txt-aware, with an SSRF guard that resolves each host before connecting.
-- **MCP server** — expose search, extract, ingest, stats and health to any AI agent over **stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP** (2026-07-28 spec). The HTTP transport is bearer-token protected; stdio is a local process.
+- **LLM-ready extraction** — clean markdown/text/json from HTML, PDF, and JS-rendered pages (headless renderer, falling back to Proxify), robots.txt-aware, with an SSRF guard that resolves each host before connecting.
+- **MCP server** — expose search, image search, extract, suggest, popular, recent, ingest, cache flush, stats and health to any AI agent over **stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP** (2026-07-28 spec). The HTTP transport is bearer-token protected; stdio is a local process.
 - **Production ops** — Redis cache + rate limits, auth (hashed API keys), Prometheus/Grafana metrics, Alembic migrations, and network segmentation so data services have no route off the host.
 - **Reproducible evaluation** — `tools/eval_retrieval.py` scores the index against a judged query set with nDCG@10, MRR@10, recall@50 and an abstention check, so retrieval changes can be measured rather than argued about. It has already earned its place: it is what showed that late-interaction reranking was *hurting* this corpus, which two rounds of manual spot-checking had missed.
 
@@ -88,6 +90,9 @@ docker compose up -d --build
 
 # optionally enable the SearXNG live-web fallback
 docker compose --profile web up -d searxng
+
+# optionally add Google search + the fetch fallback, if Proxify is running
+docker compose -f docker-compose.yml -f docker-compose.proxify.yml up -d
 ```
 
 The gateway is at `http://localhost:8000` (Alembic migrations auto-run on startup).
@@ -178,7 +183,7 @@ claude mcp list    # shows "✔ Connected"
 ```
 ┌─────────────────────────────── SearchOS Gateway (FastAPI) ───────────────────────────────┐
 │  /v1/search   →  query router  →  local FTS + vector  +  SearXNG fallback  →  RRF  rank  │
-│  /v1/extract  →  robots.txt check  →  render/fetch  →  trafilatura/pypdf  →  clean text   │
+│  /v1/extract  →  robots.txt check  →  render→GET→proxify → trafilatura/pypdf → clean text │
 │  /v1/admin/ingest · /v1/admin/keys · /health · /metrics · /stats                           │
 └───────────────┬───────────────────────────────┬──────────────────────────────────────────┘
                 │                               │
@@ -243,13 +248,14 @@ If the cross-encoder cannot load, the heuristic reranker is used instead and **t
 | Tier | Credential needed | Notes |
 |---|---|---|
 | SearXNG | — | primary |
+| Google | **none** (needs Proxify) | via `PROXIFY_URL`; ~12–16s per query (VM browser + link resolution), so it follows SearXNG unless `GOOGLE_CASCADE_POSITION=first` |
 | Tavily | **none** | documented keyless mode: `X-Tavily-Access-Mode: keyless`, identical response schema; fair-use capped per IP |
 | Exa | **none** | hosted MCP at `mcp.exa.ai`; its REST API returns 402 without a funded key |
 | Jina | key | `s.jina.ai` returns 401 without one; measured ~6s, so budget 5s — it is the last tier |
 
 A tier that answers with **zero results** does not stop the chain — it counts as a miss, because an empty SERP usually means an upstream rate limit rather than genuine absence of results. When every tier fails the chain opens a cooldown and returns immediately; one success clears it.
 
-Each tier is also addressable on its own (`sources=searxng|tavily|exa|jina`), which errors rather than silently falling back, so an empty result means that upstream genuinely had nothing. See [docs/searxng.md](docs/searxng.md).
+Each tier is also addressable on its own (`sources=searxng|google|tavily|exa|jina`), which errors rather than silently falling back, so an empty result means that upstream genuinely had nothing. See [docs/searxng.md](docs/searxng.md).
 
 ### Late interaction (ColBERT, optional)
 
@@ -302,13 +308,17 @@ CLIP embeds images and text into one space, so text→image and image→image ar
 
 Images are discovered while crawling, and picking them well matters more than it sounds: a page's first dozen `<img>` tags are its logo, edit shields and badges, not its photograph. Candidates are therefore ranked by **declared size** rather than document order, and SVG and icon-named assets are dropped — Wikimedia serves icons as `<name>.svg.png`, so a raster-looking suffix does not mean it is a photo.
 
-Requires the `images` extra (Pillow). CLIP is lazy-loaded on the first image query, not at startup, so deployments that never search images do not pay a ~600MB download in their boot path.
+Text queries drop matches below `IMAGE_TEXT_MIN_SCORE` (0.24). Measured with CLIP ViT-B/32 on this corpus, a caption scores 0.28–0.32 against a matching photo and 0.18–0.22 against an unrelated one; without the floor, "event loop diagram" returned yacht photos. `below_min_score` in the response counts what was dropped.
+
+Requires the `images` extra (Pillow). CLIP is never downloaded at startup, so deployments that never search images do not pay a ~600MB download in their boot path. It is **warmed** at startup when the weights are already cached, though: lazy loading made the first image query on each uvicorn worker take 4–7s (15s image-to-image). Warm, a text query takes 13–33ms.
+
+With Proxify configured, `source=google` returns Google Images results: Google's thumbnail, the title, and the page the image appears on.
 
 ### Failure behavior
 
 - A failing provider degrades the response (marked in `degraded`) instead of failing the request.
 - **The web cascade degrades per tier.** A dead SearXNG is transparent: the next tier answers, and `degraded` names what failed.
-- All network calls have timeouts; cache and DB are wrapped with graceful fallbacks. If the renderer is down, extraction falls back to plain HTTP fetch.
+- All network calls have timeouts; cache and DB are wrapped with graceful fallbacks. Page fetches degrade renderer → plain GET → Proxify (when configured); `fetched_via` on an extract says which one served it.
 - `/health/ready` checks Postgres, Redis, and the renderer so orchestrators only route to healthy nodes.
 - **Embeddings degrade loudly, not silently.** If the provider is unavailable, documents are still written with `status='indexed'` and no vectors, `/stats` reports `vector_search_available: false` and `embedding_coverage: 0.0`, and the worker logs why. Search falls back to keyword-only rather than failing.
 
@@ -321,14 +331,15 @@ Full reference in [docs/api.md](docs/api.md).
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | — | search query (required) |
-| `sources` | `all`\|`local`\|`vector`\|`web`\|`searxng`\|`tavily`\|`exa`\|`jina`\|`federated` | `all` | which providers to query; `web` is the whole cascade, the others pin one upstream |
+| `sources` | `all`\|`local`\|`vector`\|`web`\|`searxng`\|`google`\|`tavily`\|`exa`\|`jina`\|`federated` | `all` | which providers to query; `web` is the whole cascade, the others pin one upstream |
 | `num_results` | int 1–50 | 10 | results to return |
-| `language` | string | — | e.g. `en`, `de` |
-| `country` | string | — | e.g. `us` |
-| `time_range` | `day`\|`week`\|`month`\|`year`\|`all` | `all` | freshness filter |
-| `domains` / `exclude_domains` | list[string] | — | domain restrictions |
+| `language` | ISO 639-1, e.g. `en`, `fr` | — | indexed results limited to documents detected as that language; sent to web tiers as a locale |
+| `country` | ISO 3166, e.g. `ca` | — | combined with `language` into a web locale (`fr-CA`); no effect on indexed results, which carry no country |
+| `time_range` | `day`\|`week`\|`month`\|`year`\|`all` | `all` | freshness filter (`freshness` is an alias) |
+| `domains` / `exclude_domains` | list[string] | — | host-based domain restrictions, applied by every provider |
 | `offset` / `cursor` | int / string | 0 | pagination; prefer `cursor` for deep pages (see below) |
 | `cache` | bool | `true` | enable the Redis result cache |
+| `colbert` | bool | server default | force late-interaction reranking on/off for this query |
 
 ```json
 {
@@ -348,6 +359,7 @@ Full reference in [docs/api.md](docs/api.md).
   "total": 15,
   "returned": 10,
   "has_more": true,
+  "next_cursor": "eyJvIjoxMCwiZiI6Ii4uLiJ9",
   "offset": 0,
   "took_ms": 190,
   "cache_hit": false,
@@ -363,6 +375,8 @@ Full reference in [docs/api.md](docs/api.md).
 |---|---|
 | `total` | matches surviving the threshold, before pagination |
 | `returned` / `has_more` / `offset` | disambiguates "no matches" from "you paged past the end" |
+| `next_cursor` | pass back as `cursor` for the next page; `null` on the last page |
+| `empty_providers` | providers that answered successfully with zero results (not failures, so not in `degraded`) |
 | `top_score` | best relevance score in this page; `null` when nothing cleared the threshold |
 | `low_confidence` | `true` when no result cleared `RERANK_LOW_CONFIDENCE_SCORE` — treat as a weak match, not an answer |
 | `min_score` | the cutoff actually applied, so it is never a mystery why a result is missing |
@@ -376,7 +390,7 @@ Full reference in [docs/api.md](docs/api.md).
 | `format` | `markdown`\|`text`\|`json` | `markdown` | output shape |
 | `max_chars` | int | — | truncate content |
 
-Respects robots.txt, follows redirects, handles HTML (trafilatura), PDF (pypdf), and plain text. Results cached 1 hour.
+Respects robots.txt, follows redirects, handles HTML (trafilatura), PDF (pypdf), and plain text. Results cached 1 hour. `fetched_via` is `native` or `proxify`; see *Failure behavior*.
 
 ### `GET /v1/images/search`
 
@@ -385,8 +399,9 @@ Respects robots.txt, follows redirects, handles HTML (trafilatura), PDF (pypdf),
 | `q` | string | — | text query — text→image search |
 | `image_url` | string | — | reference image — image→image search |
 | `limit` | int 1–50 | 10 | images to return |
+| `source` | `local`\|`google` | `local` | CLIP over crawled images, or Google Images via Proxify (text only) |
 
-Provide `q` **or** `image_url`. CLIP puts images and text in one vector space, so both directions are the same operation rather than separate machinery. Image URLs are fetched through the same egress guard as every other outbound request, so this is not an SSRF path.
+Provide exactly one of `q` and `image_url`; both together is a 422. CLIP puts images and text in one vector space, so both directions are the same operation rather than separate machinery. Image URLs are fetched through the same egress guard as every other outbound request, so this is not an SSRF path.
 
 ```bash
 curl -s -G localhost:8000/v1/images/search \
@@ -406,7 +421,7 @@ Both require authentication, but neither is scoped to the calling key — they a
 
 ### Pagination
 
-Use `cursor` from a previous response rather than `offset` for anything past the first few pages. Postgres makes `OFFSET` walk and discard every skipped row, so page 50 costs roughly 50× page 1. `has_more` disambiguates "no matches" from "you paged past the end".
+Pass `next_cursor` from a previous response back as `cursor` rather than using `offset` for anything past the first few pages. Postgres makes `OFFSET` walk and discard every skipped row, so page 50 costs roughly 50× page 1. A cursor is bound to the query and filters that produced it; reusing it with a different query or different filters is a 422 rather than a silent jump to the wrong page. `has_more` disambiguates "no matches" from "you paged past the end".
 
 ### Admin + ops
 
@@ -414,7 +429,7 @@ Use `cursor` from a previous response rather than `offset` for anything past the
 - `POST /v1/admin/keys` / `GET /v1/admin/keys` (admin) — create/list API keys.
 - `GET /health/live`, `GET /health/ready` — process / dependency health.
 - `GET /metrics` — Prometheus metrics (`searchos_*`).
-- `GET /stats` — documents, chunks, keys, pending jobs.
+- `GET /stats` — documents, chunks, keys, pending jobs, and index completeness (`documents_without_chunks`, `chunks_without_embedding`, `embedding_coverage`, `vector_search_available`).
 
 ## Authentication & rate limiting
 
@@ -438,6 +453,11 @@ Everything is environment-driven (`.env`). Key variables:
 | `EXA_API_KEY` / `EXA_MCP_ENABLED` | — / `true` | cascade tier 3 over hosted MCP. REST (`402`) needs a funded key |
 | `JINA_API_KEY` | — | cascade tier 4; `s.jina.ai` returns 401 without one |
 | `SEARCH_CASCADE_COOLDOWN_SECONDS` | `30` | pause live attempts after every tier fails |
+| `PROXIFY_URL` | — | Proxify API (set by `docker-compose.proxify.yml`); enables Google and the fetch fallback |
+| `PROXIFY_BROWSER` | `gui_chrome` | Proxify strategy for Google results pages |
+| `GOOGLE_CASCADE_POSITION` | `after_searxng` | or `first` |
+| `PROXIFY_FETCH_FALLBACK` | `true` | retry failed page fetches through Proxify |
+| `PROXIFY_*` | see [docs/searxng.md](docs/searxng.md#google-through-proxify) | timeouts, link-resolution strategy and concurrency |
 | `CRAWLER_FOLLOW_LINKS` | `true` | follow nested links after ingest |
 | `CRAWLER_MAX_DEPTH` | `2` | recursive crawl depth |
 | `CRAWLER_FOLLOW_DOMAINS` | `same` | `same`\|`all`\|`none` |
@@ -459,6 +479,7 @@ Everything is environment-driven (`.env`). Key variables:
 | `COLBERT_WEIGHT` | `30.0` | blend weight vs the cross-encoder (calibrated — see below) |
 | `IMAGE_MIN_DIMENSION` | `128` | smaller images (icons, tracking pixels) are not indexed |
 | `IMAGE_MAX_PER_DOCUMENT` | `12` | images embedded per crawled page |
+| `IMAGE_TEXT_MIN_SCORE` | `0.24` | text-to-image similarity floor (CLIP ViT-B/32) |
 | `FEDERATED_ENDPOINTS` | — | comma-separated `name=url` peers, e.g. `team-a=http://peer-a:8000` |
 | `FEDERATED_API_KEY` | — | bearer token sent to peers |
 | `DEDUPE_NEAR_DUPLICATES` | `true` | collapse SimHash near-duplicates at query time |

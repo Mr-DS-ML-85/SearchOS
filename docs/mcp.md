@@ -6,12 +6,12 @@
 
 | Tool | Calls | Description |
 |---|---|---|
-| `search` | `GET /v1/search` | full search pipeline (FTS + vector + web fallback) |
-| `extract` | `POST /v1/extract` | fetch + clean a page (markdown/text/json) |
+| `search` | `GET /v1/search` | full search pipeline (FTS + vector + web fallback); `sources="google"` pins Google via Proxify |
+| `extract` | `POST /v1/extract` | fetch + clean a page (markdown/text/json); falls back to Proxify when configured, reported as `fetched_via` |
 | `ingest` | `POST /v1/admin/ingest` | seed a URL or sitemap (needs admin key) |
 | `stats` | `GET /stats` | index + queue + uptime stats |
 | `health` | `GET /health` | liveness/readiness |
-| `search_images` | `GET /v1/images/search` | text-to-image (`query`) or image-to-image (`image_url`) via CLIP |
+| `search_images` | `GET /v1/images/search` | text-to-image (`query`) or image-to-image (`image_url`) via CLIP; `source="google"` for Google Images via Proxify |
 | `suggest` | `GET /v1/suggest` | prefix completions from indexed titles |
 | `popular` | `GET /v1/popular` | most-run queries from the live Redis counter |
 | `recent` | `GET /v1/recent` | documents the crawler indexed or re-crawled recently |
@@ -34,9 +34,32 @@ The MCP server is a **translator**, not a second API: the gateway exposes no MCP
 endpoint itself. Every tool above is a thin wrapper over one REST route, so
 anything added to the gateway needs adding here too or agents cannot reach it.
 
+### Paging and what the `search` result carries
+
+The `search` tool returns `next_cursor`, `top_score`, `low_confidence`,
+`empty_providers` and `operators_applied` alongside the results. `next_cursor`
+used to be dropped by the tool's field whitelist even though the gateway sent
+it, so `has_more: true` came with no way to ask for the next page. Page by
+passing it back as `cursor`; combining `cursor` with `offset` is an error, and
+`offset` is `null` on a cursor page because the cursor carries its own.
+
+`search_images` takes exactly one of `query` and `image_url`. The schema cannot
+say so: Anthropic's tool API rejects a top-level `anyOf`, so the handler enforces
+it and names the missing or conflicting argument. Its result carries `source`,
+`min_score` and `below_min_score` (see the API reference).
+
+### Reloading after a change
+
+A stdio MCP server is a process the host app spawned; it keeps the code it
+started with. After editing `searchos_mcp.py`, restart the server from the app
+(or restart the app) **and** open a new session, because a session also caches
+the tool list. Restarting the `searchos-mcp` container only reloads the HTTP
+transport. `ps -eo pid,lstart,args | grep searchos_mcp` shows when each running
+copy started.
+
 The `search` tool's `sources` enum is asserted in `tests/test_mcp.py` against the
 gateway's own `SearchSource`, because it previously drifted: MCP listed four
-values while the gateway accepted ten, and an agent asking for
+values while the gateway accepted nine (ten now, with `google`), and an agent asking for
 `sources="federated"` received a validation error instead of results.
 
 ## Running
