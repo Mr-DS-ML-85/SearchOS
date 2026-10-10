@@ -140,6 +140,40 @@ curl -s -X POST http://localhost:8000/v1/admin/keys \
 
 `GET /v1/admin/keys` lists keys (hashes only). Roles: `user`, `admin`.
 
+## Discovery endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/suggest?q=tok&limit=8` | Query completions, merged from the corpus and the query log |
+| `GET /v1/popular?limit=10` | Most-run queries from the Redis query counter |
+| `GET /v1/recent?hours=24&limit=20` | Documents the crawler indexed or re-crawled recently |
+
+`/v1/recent` is what a "what's new" feed needs; the recrawl loop already knows
+what changed, and `search` cannot express it.
+
+## Search operators
+
+Accepted inline in `q`, stripped before anything reaches the index:
+
+| Operator | Effect |
+|---|---|
+| `site:example.com` | restrict to a host (repeatable, OR-ed) |
+| `-site:example.com` | exclude a host |
+| `filetype:pdf` | restrict by URL extension (soft: extensionless URLs are kept) |
+| `"exact phrase"` | require the phrase; reported back in `operators_applied` |
+| `-word` | drop a term from the free text |
+| `OR` | require either side (plain terms only) |
+
+Operators are merged with the `domains` / `exclude_domains` parameters rather
+than replacing them. `operators_applied` in the response echoes what was parsed.
+
+## Pagination
+
+`offset` is capped and works, but costs grow linearly because OFFSET makes
+Postgres walk and discard every skipped row. For deep paging pass the
+`next_cursor` from a previous response back as `cursor`; an invalid cursor is a
+422 rather than a silent fallback to page 1.
+
 ## Ops endpoints
 
 | Endpoint | Purpose |

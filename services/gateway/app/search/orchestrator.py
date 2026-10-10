@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
@@ -13,6 +15,43 @@ from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.search.fusion import reciprocal_rank_fusion
 from app.search.operators import parse as parse_query
 from app.search.rerank import Reranker, get_cross_encoder
+
+
+def encode_cursor(offset: int, fingerprint: str) -> str:
+    """Opaque page cursor, bound to the query it was produced for.
+
+    Binding matters: reusing a cursor from one query against another would skip
+    an arbitrary number of rows and silently return the wrong page. The
+    fingerprint is compared on decode and a mismatch is rejected.
+    """
+    import base64
+    import json
+
+    payload = json.dumps({"o": offset, "f": fingerprint}, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def decode_cursor(cursor: str) -> int | None:
+    import base64
+    import json
+
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded))
+        return int(data["o"])
+    except Exception:
+        return None
+
+
+def _operators_summary(parsed) -> dict:
+    return {
+        "text": parsed.text,
+        "include_domains": parsed.include_domains,
+        "exclude_domains": parsed.exclude_domains,
+        "filetypes": parsed.filetypes,
+        "phrases": parsed.phrases,
+        "negated": parsed.negated,
+    }
 
 
 def _filter_by_filetype(results: list, filetypes: list[str]) -> list:
@@ -73,7 +112,18 @@ class SearchOrchestrator:
         if parsed.negated:
             query_text = f"{query_text} {' '.join('-' + t for t in parsed.negated)}".strip()
 
+        cursor_fingerprint = hashlib.sha256(
+            json.dumps([query_text, req.sources, sorted(domains), sorted(exclude_domains)], default=str).encode()
+        ).hexdigest()[:16]
+
         offset = min(req.offset, self.settings.search_max_offset)
+        if req.cursor:
+            decoded = decode_cursor(req.cursor)
+            if decoded is None:
+                from app.errors import ValidationError
+
+                raise ValidationError("cursor is not valid; pass next_cursor from a previous response")
+            offset = min(decoded, self.settings.search_max_offset)
         window = offset + req.num_results
         cache_key_str = cache_key(
             "search",
@@ -93,6 +143,13 @@ class SearchOrchestrator:
             cached = await cache.get(cache_key_str)
             if cached is not None:
                 metrics.cache_hits.inc()
+                # Count it anyway: a cache hit is still a query an agent ran,
+                # and skipping it undercounts popular queries exactly where
+                # repeat traffic is highest.
+                try:
+                    await cache.record_query(req.q, results=len(cached.get("results") or []))
+                except Exception:
+                    pass
                 cached["cache_hit"] = True
                 cached["query"] = req.q
                 # A cache hit must not report the latency of the original fetch.
@@ -192,6 +249,8 @@ class SearchOrchestrator:
             top_score=results[0].score if results else None,
             low_confidence=low_confidence,
             min_score=min_score if ranked else None,
+            next_cursor=(encode_cursor(offset + len(results), cursor_fingerprint) if has_more and results else None),
+            operators_applied=_operators_summary(parsed) if parsed.has_operators else None,
         )
 
         # Cache even when a provider is degraded: the remaining providers' output
@@ -205,6 +264,11 @@ class SearchOrchestrator:
             weak = not results or low_confidence
             ttl = self.settings.search_negative_cache_ttl_seconds if weak else self.settings.search_cache_ttl_seconds
             await cache.set(cache_key_str, response.model_dump(), ttl_seconds=ttl)
+
+        try:
+            await cache.record_query(req.q, results=len(results))
+        except Exception:
+            pass
 
         try:
             from app.workers.snippet import enqueue_snippets

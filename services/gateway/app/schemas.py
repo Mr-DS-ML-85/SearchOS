@@ -20,6 +20,14 @@ class SearchRequest(BaseModel):
     domains: list[str] | None = None
     exclude_domains: list[str] | None = None
     offset: int = Field(0, ge=0, le=1000)
+    cursor: str | None = Field(
+        None,
+        description=(
+            "Opaque cursor from a previous response's next_cursor. Preferred over offset "
+            "for deep paging: OFFSET makes Postgres walk and discard every skipped row, "
+            "so page 50 costs 50x page 1."
+        ),
+    )
     cache: bool = True
 
     @model_validator(mode="before")
@@ -107,6 +115,18 @@ class SearchResponse(BaseModel):
         ),
     )
     min_score: float | None = Field(None, description="Relevance cutoff applied to this query")
+    next_cursor: str | None = Field(
+        None,
+        description="Cursor for the next page, or null at the end. Pass back as `cursor`.",
+    )
+    suggestions: list[str] = Field(
+        default_factory=list,
+        description="Query completions; only populated when `include_suggestions` is set.",
+    )
+    operators_applied: dict[str, Any] | None = Field(
+        None,
+        description="Operators parsed out of `q` (site/filetype/phrase/negation), or null.",
+    )
 
 
 class ExtractRequest(BaseModel):

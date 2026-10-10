@@ -11,7 +11,7 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import admin, extract, health, search
+from app.api import admin, discovery, extract, health, search
 from app.api.deps import current_api_key
 from app.config import get_settings
 from app.db import close_engine, get_session_factory, init_engine
@@ -353,6 +353,7 @@ def create_app() -> FastAPI:
     api_deps = [] if settings.auth_enabled else [Depends(current_api_key)]
     app.include_router(search.router, prefix="", dependencies=api_deps)
     app.include_router(extract.router, prefix="", dependencies=api_deps)
+    app.include_router(discovery.router, prefix="", dependencies=api_deps)
     app.include_router(admin.router, prefix="", dependencies=api_deps)
 
     @app.get("/")

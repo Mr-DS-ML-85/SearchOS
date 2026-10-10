@@ -102,6 +102,38 @@ class Cache:
             return removed
         return removed
 
+    async def record_query(self, query: str, *, results: int = 0) -> None:
+        """Count a search for the popular-queries view.
+
+        Kept in Redis rather than Postgres so the hot path never writes, and so
+        a burst of searches cannot lock rows.
+        """
+        q = " ".join((query or "").split())[:120].lower()
+        if not q:
+            return
+        try:
+            await self._client.zincrby(_QUERY_STATS_KEY, 1, q)
+            if results == 0:
+                await self._client.zincrby(_QUERY_EMPTY_KEY, 1, q)
+            await self._client.expire(_QUERY_STATS_KEY, settings_ttl())
+        except Exception:
+            pass
+
+    async def top_queries(self, limit: int = 10) -> list[tuple[str, int]]:
+        try:
+            rows = await self._client.zrevrange(_QUERY_STATS_KEY, 0, max(0, limit - 1), withscores=True)
+        except Exception:
+            return []
+        return [(str(name), int(score)) for name, score in rows]
+
+    async def empty_query_count(self, query: str) -> int:
+        q = " ".join((query or "").split())[:120].lower()
+        try:
+            score = await self._client.zscore(_QUERY_EMPTY_KEY, q)
+        except Exception:
+            return 0
+        return int(score or 0)
+
     async def add_to_set(self, key: str, member: str) -> bool:
         try:
             return bool(await self._client.sadd(key, member))
@@ -131,6 +163,16 @@ class Cache:
             await self._client.aclose()
         except Exception:
             pass
+
+
+_QUERY_STATS_KEY = "searchos:query_stats"
+_QUERY_EMPTY_KEY = "searchos:query_stats:empty"
+
+
+def settings_ttl() -> int:
+    from app.config import get_settings
+
+    return max(get_settings().search_cache_ttl_seconds * 24, 3600)
 
 
 _cache: Cache | None = None

@@ -9,6 +9,7 @@ from app.embed.provider import get_embedding_provider
 from app.metrics import get_metrics
 from app.schemas import SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
+from app.search.snippets import build_snippet
 
 # One row per *document*, using the best-matching chunk.
 #
@@ -82,7 +83,7 @@ class VectorIndexProvider(SearchProvider):
             document = row["content_text"] or ""
             chunk = row["chunk_content"] or ""
             # Prefer the matched chunk; fall back to the head of the document.
-            snippet = chunk[:300] if chunk else (document[:300] if document else "")
+            snippet = build_snippet(chunk or document or "", query.q).text
             result.results.append(
                 SearchResult(
                     title=row["title"] or row["url"],

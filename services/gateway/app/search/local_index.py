@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.metrics import get_metrics
 from app.schemas import SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
+from app.search.snippets import build_snippet
 
 # The tsvector expression is byte-identical to the one in migration
 # 0001/0002 (ix_documents_fts). If you change one, change both or the GIN index
@@ -93,7 +94,7 @@ class LocalIndexProvider(SearchProvider):
                 SearchResult(
                     title=row["title"] or row["url"],
                     url=row["url"],
-                    snippet=content[:300] if content else "",
+                    snippet=build_snippet(content, query.q).text if content else "",
                     source=self.name,
                     score=fts_score * self.settings.local_index_fts_weight,
                     rank=rank,
