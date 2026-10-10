@@ -151,6 +151,12 @@ class Settings(BaseSettings):
     # merely-related questions and would answer them with the wrong result.
     semantic_cache_enabled: bool = True
     semantic_cache_threshold: float = 0.92
+    # Comma-separated list of `name=url` peers. A plain string rather than a
+    # list because pydantic-settings JSON-decodes list-typed fields from the
+    # environment and rejects a comma-separated value outright.
+    federated_endpoints: str = ""
+    federated_api_key: str = ""
+    federated_timeout_seconds: float = 10.0
     extract_cache_ttl_seconds: int = 3600
 
     extract_max_bytes: int = 5242880
@@ -303,6 +309,11 @@ class Settings(BaseSettings):
             f"{quote(self.postgres_password, safe='')}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def federated_peers(self) -> list[str]:
+        """Parsed from FEDERATED_ENDPOINTS; empty disables federation."""
+        return [p.strip() for p in (self.federated_endpoints or "").split(",") if p.strip()]
 
     @property
     def cache_redis_url(self) -> str:

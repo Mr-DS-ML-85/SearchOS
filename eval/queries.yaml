@@ -1,0 +1,98 @@
+# Retrieval evaluation set for SearchOS.
+#
+# Relevance is judged by URL pattern, not by an exact URL, because the corpus is
+# live: a mirror, a docs page and a blog post can all be correct answers and the
+# set must survive re-crawling.
+#
+# Each entry:
+#   query      what a user would actually type
+#   relevant   URL patterns; a result counts as relevant when its URL contains
+#              any of these, case-insensitively. Order is the graded ranking,
+#              most-relevant first.
+#   note       why this query is in the set
+#
+# The mix is deliberate and skewed toward the cases that have actually broken:
+# paraphrases (which need semantic retrieval, not lexical overlap), narrow
+# technical terms, and domain-restricted queries. Two nonsense queries are
+# included with `expect_empty`, because a system that confidently answers
+# "qwerty plimsoll marmalade zeppelin" is worse than one that abstains.
+
+- query: CAGRA GPU graph index
+  relevant:
+    - docs.nvidia.com/cuvs
+    - arxiv.org/abs/2308.15136
+    - milvus.io/blog/faster-index-builds
+  note: canonical term; top result should be the NVIDIA cuVS reference.
+
+- query: approximate nearest neighbor search
+  relevant:
+    - en.wikipedia.org/wiki/Nearest_neighbor_search
+    - nmslib.hypothesa.is
+  note: paraphrased concept, not a product name.
+
+- query: how do I tune postgresql autovacuum
+  relevant:
+    - postgresql.org/docs/current/routine-vacuuming
+    - enterprisedb.com/blog/autovacuum-tuning
+    - wikipedia.org/wiki/PostgreSQL
+  note: question form; the local index should hold the tuning guides.
+
+- query: tokio async runtime scheduling
+  relevant:
+    - tokio.rs
+    - docs.rs/tokio
+  note: hyphenation and morphology vary across sources.
+
+- query: pgvector hnsw index creation
+  relevant:
+    - github.com/pgvector
+    - postgresql.org/docs
+  note: two technologies that must co-occur in a useful result.
+
+- query: reciprocal rank fusion
+  relevant:
+    - en.wikipedia.org/wiki/Reciprocal_rank_fusion
+    - searx.space
+  note: term the corpus barely covers; checks abstention vs hallucination.
+
+- query: '"vector database" comparison'
+  relevant:
+    - wikipedia.org
+    - milvus.io
+    - qdrant.tech
+  note: quoted phrase plus comparison intent.
+
+- query: rust ownership borrowing rules
+  relevant:
+    - doc.rust-lang.org/book
+  note: domain-scoped technical question.
+
+- query: bm25 ranking function
+  relevant:
+    - en.wikipedia.org/wiki/Okapi_BM25
+  note: exact rare term; a lexical search should ace this.
+
+- query: SearXNG metasearch instance
+  relevant:
+    - docs.searxng.org
+    - searx.space
+  note: product the project depends on.
+
+- query: cross encoder reranking ms marco
+  relevant:
+    - huggingface.co
+    - github.com
+  note: tests that indexing works across hosts, not one domain.
+
+- query: SIMSHASH near duplicate documents
+  relevant:
+    - wikipedia.org
+  note: deliberately misspelled to exercise fuzzy behaviour; still expect a hit.
+
+- query: zxqvbnm flurgle obsidian kettle
+  expect_empty: true
+  note: nonsense. The system should return nothing and say low_confidence.
+
+- query: qwerty plimsoll marmalade zeppelin
+  expect_empty: true
+  note: nonsense. Same expectation.

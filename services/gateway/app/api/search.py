@@ -59,6 +59,13 @@ def build_orchestrator():
         # was dead, misconfigured, or simply never reached.
         for tier in getattr(cascade, "tiers", []):
             orchestrator.providers.setdefault(tier.name, tier)
+    if settings.federated_peers:
+        from app.search.providers.federated import build_federated
+
+        federated = build_federated(settings)
+        if federated is not None:
+            orchestrator.providers["federated"] = federated
+
     return orchestrator
 
 

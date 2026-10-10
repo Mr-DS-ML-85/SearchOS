@@ -171,7 +171,7 @@ class SearchOrchestrator:
         )
 
         if req.cache:
-            semantic = await self.semantic_cache.lookup(query_text)
+            semantic = await self.semantic_cache.lookup(query_text, req.sources)
             if semantic[0] is not None:
                 semantic[0]["query"] = req.q
                 semantic[0]["took_ms"] = int((time.monotonic() - start) * 1000)
@@ -309,7 +309,7 @@ class SearchOrchestrator:
             await cache.set(cache_key_str, response.model_dump(), ttl_seconds=ttl)
             if results and not weak:
                 try:
-                    await self.semantic_cache.remember(query_text, cache_key_str)
+                    await self.semantic_cache.remember(query_text, cache_key_str, req.sources)
                 except Exception:
                     pass
 

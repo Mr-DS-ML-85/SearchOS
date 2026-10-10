@@ -153,6 +153,25 @@ curl -s -X POST http://localhost:8000/v1/admin/keys \
 `/v1/recent` is what a "what's new" feed needs; the recrawl loop already knows
 what changed, and `search` cannot express it.
 
+## Federated search
+
+Queries several SearchOS instances at once, for a team that wants its private
+corpus searched together with a shared one.
+
+```bash
+FEDERATED_ENDPOINTS=team-a=http://peer-a:8000,shared=http://shared:8000
+```
+
+**Peer URLs are resolved from inside the gateway container.** `127.0.0.1:8001`
+means the gateway itself, not the host — use a compose service name or
+`host.docker.internal`.
+
+Results carry `source: federated:<peer>` so callers can see which index answered,
+and merge with Reciprocal Rank Fusion, so a URL that several peers return scores
+higher than one only a single peer found. A peer that fails is skipped and
+recorded in `degraded`, and is then skipped without a live call for 30 seconds so
+one dead peer cannot add its timeout to every query.
+
 ## Search operators
 
 Accepted inline in `q`, stripped before anything reaches the index:

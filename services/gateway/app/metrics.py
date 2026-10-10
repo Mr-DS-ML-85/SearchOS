@@ -51,6 +51,11 @@ class Metrics:
             buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
         )
         self.documents_indexed = Counter("searchos_documents_indexed_total", "Documents indexed")
+        self.federated_peer_errors = Counter(
+            "searchos_federated_peer_errors_total",
+            "Failed federated peer calls, by peer",
+            ["peer"],
+        )
         self.semantic_cache_hits = Counter(
             "searchos_semantic_cache_hits_total",
             "Searches answered from a near-identical earlier query",

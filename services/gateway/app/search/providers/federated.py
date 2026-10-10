@@ -1,0 +1,169 @@
+"""Federated search across remote SearchOS instances.
+
+Enterprise search is rarely one index. A team wants its own private corpus
+searched together with a shared one, or a deployment wants to search a regional
+index and a global one without the caller knowing which is which. This provider
+fans a query out to every configured peer and merges the answers.
+
+Design points that are not obvious:
+
+- **Peers are trusted to return results, not to execute anything.** Each peer is
+  called with the same query and the same filters; nothing from a peer's response
+  is interpreted except the documented result shape.
+- **One slow peer must not sink the request.** Each call is bounded by its own
+  timeout and failures are reported through ``degraded``, matching how the other
+  providers behave.
+- **A peer that is down is remembered briefly.** Without that, every query pays
+  the full timeout of every dead peer, which is the same failure the web cascade
+  already had to solve.
+
+Results merge with the same Reciprocal Rank Fusion the rest of the pipeline uses,
+so a peer that ranks something highly is trusted the same way the local index is.
+"""
+
+from __future__ import annotations
+
+import time
+
+import httpx
+
+from app.config import get_settings
+from app.logging import get_logger
+from app.metrics import get_metrics
+from app.schemas import SearchResult
+from app.search.base import ProviderQuery, ProviderResult, SearchProvider, domain_of
+
+logger = get_logger("search.providers.federated")
+
+# A peer that fails is skipped without a live call for this long.
+_OUTAGE_SECONDS = 30.0
+
+
+class FederatedProvider(SearchProvider):
+    """Fan out to remote SearchOS gateways and merge with RRF."""
+
+    name = "federated"
+
+    def __init__(self, endpoints: list[tuple[str, str]], timeout: float = 10.0) -> None:
+        # endpoints: [(name, base_url)] — the name prefixes each result's source
+        # so a caller can tell which peer answered.
+        self.settings = get_settings()
+        self.endpoints = endpoints
+        self.timeout = timeout
+        self._down_until: dict[str, float] = {}
+
+    def _live(self) -> list[tuple[str, str]]:
+        now = time.monotonic()
+        return [(n, u) for n, u in self.endpoints if self._down_until.get(n, 0.0) <= now]
+
+    async def search(self, query: ProviderQuery) -> ProviderResult:
+        start = time.monotonic()
+        result = ProviderResult(provider=self.name, query=query.q)
+
+        peers = self._live()
+        if not peers:
+            result.error = "federated: every peer is in outage"
+            return result
+
+        params: dict = {
+            "q": query.q,
+            "num_results": max(query.num_results, 10),
+            "sources": "all",
+            "time_range": query.time_range,
+            "cache": "true",
+        }
+        if query.language:
+            params["language"] = query.language
+        if query.domains:
+            params["domains"] = query.domains
+        if query.exclude_domains:
+            params["exclude_domains"] = query.exclude_domains
+
+        settings = self.settings
+        rankings: dict[str, list[str]] = {}
+        metadata: dict[str, dict] = {}
+        failures: list[str] = []
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for name, base in peers:
+                try:
+                    resp = await client.get(
+                        f"{base.rstrip('/')}/v1/search",
+                        params=params,
+                        headers={
+                            "Authorization": f"Bearer {settings.federated_api_key or settings.bootstrap_admin_api_key}"
+                        },
+                    )
+                    resp.raise_for_status()
+                    payload = resp.json()
+                except Exception as exc:
+                    self._down_until[name] = time.monotonic() + _OUTAGE_SECONDS
+                    failures.append(f"{name}: {exc.__class__.__name__}")
+                    get_metrics().federated_peer_errors.labels(peer=name).inc()
+                    continue
+                urls = [
+                    (r.get("url") or "") for r in (payload.get("results") or [])[: query.num_results] if r.get("url")
+                ]
+                if urls:
+                    rankings[name] = urls
+                    # The peer's title and snippet have to come along. Sending
+                    # bare URLs made every federated result unscoreable by the
+                    # cross-encoder downstream, so all of them fell below
+                    # RERANK_MIN_SCORE and the provider returned nothing.
+                    for row in (payload.get("results") or [])[: query.num_results]:
+                        if row.get("url"):
+                            metadata[row["url"]] = row
+
+        if not rankings:
+            result.error = "federated: no peer returned results: " + "; ".join(failures)
+            result.latency_ms = (time.monotonic() - start) * 1000
+            return result
+
+        merged = _rrf(rankings, k=self.settings.rrf_k)
+        merged = merged[: query.num_results]
+        for rank, (url, score, peer) in enumerate(merged, start=1):
+            peer_row = metadata.get(url, {})
+            result.results.append(
+                SearchResult(
+                    title=peer_row.get("title") or url,
+                    url=url,
+                    snippet=(peer_row.get("snippet") or "")[:1200],
+                    source=f"federated:{peer}",
+                    score=score,
+                    rank=rank,
+                    domain=domain_of(url),
+                )
+            )
+        result.raw = {"peers": sorted(rankings), "failed": failures, "dropped_peers": len(self.endpoints) - len(peers)}
+        result.latency_ms = (time.monotonic() - start) * 1000
+        return result
+
+
+def _rrf(rankings: dict[str, list[str]], k: int = 60) -> list[tuple[str, float, str]]:
+    """Reciprocal Rank Fusion across peers.
+
+    A URL appearing in several peers' lists scores higher than one that appears
+    in a single list at the same position, which is the property that makes
+    agreement between independent indices meaningful.
+    """
+    scores: dict[str, float] = {}
+    peer_of: dict[str, str] = {}
+    for peer, urls in rankings.items():
+        for position, url in enumerate(urls):
+            scores[url] = scores.get(url, 0.0) + 1.0 / (k + position + 1)
+            peer_of.setdefault(url, peer)
+    return sorted(((url, score, peer_of[url]) for url, score in scores.items()), key=lambda t: -t[1])
+
+
+def build_federated(settings=None) -> FederatedProvider | None:
+    cfg = settings or get_settings()
+    peers: list[tuple[str, str]] = []
+    for raw in cfg.federated_peers:
+        if "=" in raw:
+            name, url = raw.split("=", 1)
+        else:
+            name, url = raw.rstrip("/").rsplit("//", 1)[-1].split("/", 1)[0], raw
+        peers.append((name.strip(), url.strip()))
+    if not peers:
+        return None
+    return FederatedProvider(peers, timeout=cfg.federated_timeout_seconds)

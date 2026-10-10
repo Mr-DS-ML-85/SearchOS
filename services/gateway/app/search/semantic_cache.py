@@ -71,8 +71,20 @@ class SemanticCache:
         except Exception:
             return None
 
-    async def lookup(self, query: str, embedding: list[float] | None = None) -> tuple[dict | None, str | None, float]:
-        """Return ``(cached_response, matched_query, similarity)`` or Nones."""
+    async def lookup(
+        self,
+        query: str,
+        sources: str = "all",
+        embedding: list[float] | None = None,
+    ) -> tuple[dict | None, str | None, float]:
+        """Return ``(cached_response, matched_query, similarity)`` or Nones.
+
+        ``sources`` is part of the identity of an answer, not an afterthought.
+        An entry recorded for ``sources=all`` must never satisfy a request for
+        ``sources=federated``: the two ask different questions of the system and
+        return different sets. Without this the cache silently answered a
+        pinned-provider query with a whole-corpus result.
+        """
         if not self.enabled or not query.strip():
             return None, None, 0.0
         if embedding is None:
@@ -99,6 +111,8 @@ class SemanticCache:
                 continue
             if now - float(entry.get("t", 0)) > _FRESH_SECONDS:
                 continue
+            if entry.get("s") != sources:
+                continue
             score = cosine(embedding, entry.get("e") or [])
             if score > best_score:
                 best_key = entry.get("k")
@@ -118,7 +132,13 @@ class SemanticCache:
         get_metrics().semantic_cache_hits.inc()
         return stored, best_query, best_score
 
-    async def remember(self, query: str, cache_key: str, embedding: list[float] | None = None) -> None:
+    async def remember(
+        self,
+        query: str,
+        cache_key: str,
+        sources: str = "all",
+        embedding: list[float] | None = None,
+    ) -> None:
         if not self.enabled or not query.strip():
             return
         if embedding is None:
@@ -126,7 +146,7 @@ class SemanticCache:
         if not embedding:
             return
         cache = get_cache()
-        entry = json.dumps({"q": query[:200], "k": cache_key, "e": embedding, "t": time.time()})
+        entry = json.dumps({"q": query[:200], "k": cache_key, "e": embedding, "t": time.time(), "s": sources})
         try:
             await cache.rpush(_LIST_KEY, entry)
             await cache.ltrim(_LIST_KEY, -self.max_entries, -1)
