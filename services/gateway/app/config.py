@@ -1,25 +1,69 @@
 from __future__ import annotations
 
+import ipaddress
+import json
 from functools import lru_cache
+from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 EMBEDDING_DIM = 384
+
+LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+
+# Egress policy: these destination ranges are never reachable from
+# ``/v1/extract``, the crawler, or the renderer. SSRF guard.
+BLOCKED_NETWORKS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in (
+        "0.0.0.0/8",  # "this network"
+        "10.0.0.0/8",  # RFC1918
+        "100.64.0.0/10",  # CGNAT
+        "127.0.0.0/8",  # loopback
+        "169.254.0.0/16",  # link-local / cloud metadata (169.254.169.254)
+        "172.16.0.0/12",  # RFC1918
+        "192.0.0.0/24",  # IETF protocol assignments
+        "192.0.2.0/24",  # TEST-NET-1
+        "192.168.0.0/16",  # RFC1918
+        "198.18.0.0/15",  # benchmarking
+        "198.51.100.0/24",  # TEST-NET-2
+        "203.0.113.0/24",  # TEST-NET-3
+        "224.0.0.0/4",  # multicast
+        "240.0.0.0/4",  # reserved
+        "255.255.255.255/32",  # broadcast
+    )
+)
+
+
+def is_blocked_ip(addr: str) -> bool:
+    """True when ``addr`` is not a globally routable public address."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
+        return True
+    if ip.is_reserved or ip.is_unspecified:
+        return True
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return is_blocked_ip(str(ip.ipv4_mapped))
+    return any(ip in net for net in BLOCKED_NETWORKS)
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_env: str = "production"
     app_debug: bool = False
     log_level: str = "INFO"
     app_name: str = "searchos"
     app_version: str = "1.0.0"
 
-    gateway_host: str = "0.0.0.0"
-    gateway_port: int = 8000
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
 
     postgres_host: str = "postgres"
     postgres_port: int = 5432
@@ -33,6 +77,7 @@ class Settings(BaseSettings):
     redis_ratelimit_db: int = 2
 
     renderer_url: str = ""
+    renderer_token: str = ""
     render_timeout_seconds: float = 35.0
     render_max_bytes: int = 10485760
 
@@ -44,19 +89,14 @@ class Settings(BaseSettings):
     local_index_enabled: bool = True
     local_index_fts_weight: float = 0.6
     local_index_vector_weight: float = 0.4
-    local_index_k: int = 25
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
-    embedding_dim: int = EMBEDDING_DIM
     embedding_device: str = "cpu"
     embedding_batch_size: int = 16
 
-    fusion_mode: str = "rrf"
     rrf_k: int = 60
     rerank_enabled: bool = True
     rerank_top_k: int = 20
-    default_num_results: int = 10
-    max_num_results: int = 50
 
     search_cache_ttl_seconds: int = 300
     extract_cache_ttl_seconds: int = 3600
@@ -65,39 +105,134 @@ class Settings(BaseSettings):
     extract_timeout_seconds: float = 20.0
     extract_user_agent: str = "SearchOSBot/1.0 (+https://searchos.local/bot)"
     fetch_respect_robots: bool = True
+    fetch_max_redirects: int = 5
+    robots_timeout_seconds: float = 10.0
+    fetch_block_private_networks: bool = True
+    fetch_allow_private_networks: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    max_request_body_bytes: int = 262144
 
     auth_enabled: bool = True
-    bootstrap_admin_api_key: str = "change-me-to-a-long-random-secret"
+    bootstrap_admin_api_key: str = ""
     rate_limit_per_minute: int = 60
     rate_limit_per_hour: int = 600
     rate_limit_per_day: int = 5000
+    rate_limit_auth_failures_per_minute: int = 10
+    rate_limit_health_endpoints: bool = False
 
-    worker_ingest_batch: int = 5
     worker_ingest_poll_interval_seconds: float = 2.0
     worker_snippet_batch: int = 10
     worker_snippet_poll_interval_seconds: float = 5.0
     worker_max_attempts: int = 3
     worker_stale_job_seconds: float = 300.0
+    worker_retry_base_seconds: float = 30.0
+    worker_metrics_port: int = 9101
+    worker_run_migrations: bool = False
+
+    chunk_max_tokens: int = 512
+    chunk_overlap_tokens: int = 64
+
+    backfill_enabled: bool = True
+    backfill_interval_seconds: float = 3600.0
+    backfill_batch_size: int = 50
 
     crawler_follow_links: bool = True
     crawler_max_depth: int = 2
     crawler_batch_size: int = 25
-    crawler_follow_domains: str = "same"
+    crawler_follow_domains: Literal["same", "all", "none"] = "same"
+    crawler_max_urls_per_seed: int = 5000
     crawler_continuous_enabled: bool = True
     crawler_continuous_interval_seconds: float = 3600.0
     crawler_recrawl_after_seconds: float = 604800.0
     crawler_recrawl_batch: int = 100
 
+    search_max_offset: int = 1000
+    search_max_candidates: int = 100
+    vector_min_similarity: float = 0.0
+
     prometheus_enabled: bool = True
-    otel_enabled: bool = False
-    otel_exporter_otlp_endpoint: str = ""
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _validate_log_level(cls, value: Any) -> str:
+        level = str(value).upper()
+        if level not in LOG_LEVELS:
+            raise ValueError(f"log_level must be one of {sorted(LOG_LEVELS)}, got {value!r}")
+        return level
+
+    @field_validator("cors_origins", "fetch_allow_private_networks", mode="before")
+    @classmethod
+    def _split_csv_or_json(cls, value: Any) -> Any:
+        """Accept JSON arrays, bare ``*``, or comma-separated lists.
+
+        pydantic-settings decodes complex fields as JSON, so ``CORS_ORIGINS=*``
+        (the value shipped in .env.example) raised at import time and crashed
+        the process before the lifespan ever ran. We parse every string form
+        ourselves and hand pydantic a real list.
+        """
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"expected a JSON array, got {raw!r}") from exc
+                if not isinstance(parsed, list):
+                    raise ValueError(f"expected a JSON array, got {raw!r}")
+                return [str(item).strip() for item in parsed if str(item).strip()]
+            if raw == "*":
+                return ["*"]
+            if raw == "null":
+                return []
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return value
+
+    @field_validator("crawler_follow_domains", mode="before")
+    @classmethod
+    def _validate_follow_domains(cls, value: Any) -> str:
+        value = str(value).strip().lower()
+        if value not in {"same", "all", "none"}:
+            raise ValueError(f"crawler_follow_domains must be same|all|none, got {value!r}")
+        return value
+
+    @field_validator("fetch_allow_private_networks", mode="after")
+    @classmethod
+    def _normalise_allowlist(cls, value: list[str]) -> list[str]:
+        """Bare hostnames imply the whole host; keep them for host matching."""
+        return [item.strip().lower() for item in value if item and item.strip()]
+
+    @model_validator(mode="after")
+    def _validate_security_posture(self) -> Settings:
+        if not self.auth_enabled:
+            return self
+        key = self.bootstrap_admin_api_key
+        if not key or key.startswith("change-me"):
+            raise ValueError(
+                "AUTH_ENABLED is true but BOOTSTRAP_ADMIN_API_KEY is unset or still a "
+                'placeholder. Generate one with: python3 -c "import secrets; '
+                "print('sk_' + secrets.token_urlsafe(32))\""
+            )
+        if len(key) < 16:
+            raise ValueError("BOOTSTRAP_ADMIN_API_KEY must be at least 16 characters")
+        return self
+
+    @property
+    def cors_allows_credentials(self) -> bool:
+        """Wildcard origins must not be paired with credentialed CORS.
+
+        Starlette reflects the request Origin when allow_credentials is on, which
+        lets any site drive the API (including admin routes) from a browser.
+        """
+        return "*" not in self.cors_origins
 
     @property
     def db_url(self) -> str:
         if self.database_url:
             return self.database_url
         return (
-            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql+asyncpg://{quote(self.postgres_user, safe='')}:"
+            f"{quote(self.postgres_password, safe='')}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 

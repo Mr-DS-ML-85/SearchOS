@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -12,7 +15,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: searchos
+          POSTGRES_PASSWORD: searchos
+          POSTGRES_DB: searchos
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U searchos"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      # Unblocks the integration suites. Without these the DB-backed tests were
+      # silently skipped, so none of the real SQL was ever exercised in CI.
+      TEST_DATABASE_URL: postgresql+asyncpg://searchos:searchos@127.0.0.1:5432/searchos
+      TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      DATABASE_URL: postgresql+asyncpg://searchos:searchos@127.0.0.1:5432/searchos
+      REDIS_URL: redis://127.0.0.1:6379/0
+      AUTH_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4
 
@@ -24,38 +52,133 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ matrix.python-version }}-${{ hashFiles('services/gateway/requirements*.txt', 'services/gateway/pyproject.toml') }}
+          key: pip-${{ matrix.python-version }}-${{ hashFiles('services/gateway/pyproject.toml') }}
           restore-keys: |
             pip-${{ matrix.python-version }}-
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r services/gateway/requirements-dev.txt
+          pip install -e "services/gateway[test]"
+          # The MCP service has its own requirements and was never installed,
+          # so `import mcp_types` was never executed. Only compileall ran.
+          pip install -r services/mcp/requirements.txt
+          pip install -r services/renderer/requirements.txt
 
-      - name: Lint (compile check)
+      - name: Lint (ruff)
         run: |
-          python -m compileall -q services/gateway/app
-          python -m compileall -q services/mcp
-          python -m compileall -q tools
+          pip install ruff
+          ruff check services tests tools
+          ruff format --check services tests tools
+
+      - name: Typecheck (mypy, advisory)
+        continue-on-error: true
+        run: |
+          pip install mypy
+          mypy --ignore-missing-imports --no-strict-optional services/gateway/app
+
+      - name: Security audit (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit --requirement services/gateway/pyproject.toml --strict || true
+
+      - name: Verify MCP server imports
+        run: python -c "import sys; sys.path.insert(0, 'services/mcp'); import searchos_mcp"
+
+      - name: Apply migrations (also proves downgrade/upgrade are reversible)
+        working-directory: services/gateway
+        run: |
+          python -m alembic upgrade head
+          python -m alembic downgrade base
+          python -m alembic upgrade head
 
       - name: Run tests
-        run: |
-          python -m pytest tests -q
+        run: python -m pytest tests -q
 
-  docker-build:
-    name: Docker build (gateway + renderer)
+      - name: Run MCP protocol tests against a live gateway
+        run: |
+          python -m uvicorn app.main:app --app-dir services/gateway --port 18002 &
+          for i in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:18002/health/live && break || sleep 1
+          done
+          SEARCHOS_URL=http://127.0.0.1:18002 \
+          SEARCHOS_API_KEY="" \
+          MCP_HTTP_TOKEN=ci_mcp_token \
+          python services/mcp/searchos_mcp.py --transport http --port 18100 &
+          for i in $(seq 1 40); do
+            curl -fsS -H "Authorization: Bearer ci_mcp_token" \
+              -X POST http://127.0.0.1:18100/mcp -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+              >/dev/null && break || sleep 1
+          done
+          TEST_MCP_GATEWAY_URL=http://127.0.0.1:18002 \
+          TEST_MCP_API_KEY=ci \
+          TEST_MCP_SERVER_URL=http://127.0.0.1:18100 \
+          TEST_MCP_HTTP_TOKEN=ci_mcp_token \
+          python -m pytest tests/test_mcp_e2e.py -q
+
+  observability:
+    name: Monitoring config
     runs-on: ubuntu-latest
-    needs: test
     steps:
       - uses: actions/checkout@v4
-
-      - name: Create .env with test keys
+      - name: Validate prometheus config and rules
         run: |
-          echo "BOOTSTRAP_ADMIN_API_KEY=sk_ci_test_only_${{ github.run_id }}_not_a_real_key" >> .env
+          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.53.0 check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.53.0 check rules /etc/prometheus/alerts.yml
+      - name: Validate Grafana dashboard JSON
+        run: |
+          python -c "import json,sys; json.load(open('monitoring/grafana/provisioning/dashboards/searchos.json')); print('dashboard JSON ok')"
 
-      - name: Build gateway image
-        run: docker compose build gateway
+  compose:
+    name: Docker compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write throwaway secrets
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_PASSWORD=ci_postgres_password
+          RENDERER_TOKEN=ci_renderer_token
+          BOOTSTRAP_ADMIN_API_KEY=sk_ci_admin_key_at_least_16_chars
+          GRAFANA_ADMIN_PASSWORD=ci_grafana_password
+          SEARXNG_SECRET=ci_searxng_secret
+          EOF
+      # Was `build` only: a broken healthcheck, a bad depends_on, or a failing
+      # migration would pass CI and break on the operator's first `make up`.
+      - name: Validate compose config
+        run: docker compose config --quiet
+      - name: Boot the full stack
+        run: |
+          docker compose up -d --wait --wait-timeout 300
+          docker compose ps
+          curl -fsS http://127.0.0.1:8000/health/ready
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
 
-      - name: Build renderer image
-        run: docker compose build renderer
+  security:
+    name: Container scan
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write throwaway secrets
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_PASSWORD=ci_postgres_password
+          RENDERER_TOKEN=ci_renderer_token
+          BOOTSTRAP_ADMIN_API_KEY=sk_ci_admin_key_at_least_16_chars
+          GRAFANA_ADMIN_PASSWORD=ci_grafana_password
+          SEARXNG_SECRET=ci_searxng_secret
+          EOF
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true

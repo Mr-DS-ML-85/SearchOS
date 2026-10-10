@@ -28,7 +28,7 @@ def reciprocal_rank_fusion(
         return 2 if source in ("local", "vector") else 1
 
     fused: dict[str, tuple[float, SearchResult]] = {}
-    for provider, results in provider_results.items():
+    for results in provider_results.values():
         for rank, result in enumerate(results, start=1):
             key = normalize_url(result.url)
             increment = 1.0 / (k + rank)
@@ -40,11 +40,9 @@ def reciprocal_rank_fusion(
             else:
                 fused[key] = (increment, result)
 
-    ordered = OrderedDict(
-        sorted(fused.items(), key=lambda item: item[1][0], reverse=True)
-    )
+    ordered = OrderedDict(sorted(fused.items(), key=lambda item: item[1][0], reverse=True))
     merged: list[SearchResult] = []
-    for rank, (key, (score, result)) in enumerate(ordered.items(), start=1):
+    for rank, (_key, (score, result)) in enumerate(ordered.items(), start=1):
         merged.append(
             SearchResult(
                 title=result.title,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Sequence
+from collections.abc import Sequence
 
 from app.config import get_settings
 
@@ -17,9 +17,7 @@ class EmbeddingProvider:
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError:
-            raise RuntimeError(
-                "sentence-transformers not installed. Run: pip install sentence-transformers"
-            ) from None
+            raise RuntimeError("sentence-transformers not installed. Run: pip install sentence-transformers") from None
         self._model = SentenceTransformer(self.settings.embedding_model, device=self.settings.embedding_device)
         return self._model
 

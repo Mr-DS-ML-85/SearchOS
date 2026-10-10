@@ -10,6 +10,10 @@ scrape_configs:
     static_configs:
       - targets: ["gateway:8000"]
     metrics_path: /metrics
+    # /metrics is behind an API key (it exposes internals and /stats runs
+    # COUNT(*)). The token is read from a file rather than inlined so it never
+    # lands in the config file or in `docker inspect`.
+    bearer_token_file: /etc/prometheus/gateway_token
 
   - job_name: "renderer"
     static_configs:
@@ -17,5 +21,21 @@ scrape_configs:
     metrics_path: /metrics
 
   - job_name: "postgres-exporter"
+    # Was "postgres:9187" — but 9187 is the exporter's port on the
+    # postgres-exporter service, not on postgres. Every database metric was
+    # unreachable.
     static_configs:
-      - targets: ["postgres:9187"]
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: "worker"
+    # The worker increments documents_indexed / queue_depth but runs no HTTP
+    # server, so none of its metrics were ever scraped: crawler activity was
+    # completely invisible and a dead crawler produced no signal at all.
+    static_configs:
+      - targets: ["worker:9101"]
+    metrics_path: /metrics
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+

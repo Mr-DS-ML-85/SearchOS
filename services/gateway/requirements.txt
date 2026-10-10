@@ -13,4 +13,6 @@ pypdf>=4.2
 prometheus-client>=0.20
 python-multipart>=0.0.9
 python-dotenv>=1.0
-sentence-transformers>=2.7
+defusedxml>=0.7
+# Optional: enables the vector provider (pulls torch, ~3 GB).
+# See pyproject.toml [project.optional-dependencies].embeddings

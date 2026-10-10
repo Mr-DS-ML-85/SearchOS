@@ -22,12 +22,17 @@ class NotFoundError(AppError):
 
 class ValidationError(AppError):
     code = "validation_error"
-    http_status = status.HTTP_422_UNPROCESSABLE_CONTENT
+    # Literal 422: HTTP_422_UNPROCESSABLE_CONTENT only exists in Starlette >= 0.47,
+    # and requirements.txt allows fastapi versions pinned to Starlette < 0.42.
+    http_status = 422
 
 
 class AuthError(AppError):
     code = "unauthorized"
     http_status = status.HTTP_401_UNAUTHORIZED
+
+    def __init__(self, message: str, *, details: Any = None) -> None:
+        super().__init__(message, details=details)
 
 
 class ForbiddenError(AppError):
@@ -54,12 +59,23 @@ class SearchNoResultsError(AppError):
     http_status = status.HTTP_404_NOT_FOUND
 
 
-def to_http_error(exc: AppError) -> HTTPException:
-    headers = None
+def error_body(exc: AppError) -> dict[str, Any]:
+    """The one and only error envelope shape."""
+    return {"code": exc.code, "message": exc.message, "details": exc.details}
+
+
+def error_headers(exc: AppError) -> dict[str, str] | None:
+    headers: dict[str, str] = {}
     if isinstance(exc, RateLimitError):
-        headers = {"Retry-After": str(exc.retry_after_seconds)}
+        headers["Retry-After"] = str(exc.retry_after_seconds)
+    if isinstance(exc, AuthError):
+        headers["WWW-Authenticate"] = 'Bearer realm="searchos"'
+    return headers or None
+
+
+def to_http_error(exc: AppError) -> HTTPException:
     return HTTPException(
         status_code=exc.http_status,
-        detail={"code": exc.code, "message": exc.message, "details": exc.details},
-        headers=headers,
+        detail=error_body(exc),
+        headers=error_headers(exc),
     )

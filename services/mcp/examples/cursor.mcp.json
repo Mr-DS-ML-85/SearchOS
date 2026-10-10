@@ -1,7 +1,10 @@
 {
   "mcpServers": {
     "searchos": {
-      "url": "http://localhost:8099/sse"
+      "url": "http://localhost:8099/sse",
+      "headers": {
+        "Authorization": "Bearer ${MCP_HTTP_TOKEN}"
+      }
     }
   }
 }

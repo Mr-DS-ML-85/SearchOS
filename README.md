@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 34 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 257 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -273,23 +273,44 @@ MCP server settings: `SEARCHOS_URL`, `SEARCHOS_API_KEY`, `SEARCHOS_ADMIN_KEY`, `
 
 ```bash
 make test          # run unit tests (pytest)
-make lint          # compile-check all modules
+make lint          # ruff check + format --check
+make config        # validate compose, prometheus config/rules, dashboard JSON
 make up            # docker compose up --build
 make logs          # follow all logs
 make restart       # restart gateway + worker
 ```
 
-Tests run against mocked HTTP (respx), an in-memory fake Redis, and real trafilatura extraction. Postgres-backed behavior (FTS, vectors) requires the compose stack.
+The unit suite runs with no infrastructure (fakes for Redis and HTTP, real
+trafilatura extraction). Two further suites exercise the parts that only make
+sense against real services — the FTS and pgvector SQL, and Redis key
+semantics — and skip themselves unless you point them somewhere:
 
 ```
 tests/
-  test_fusion.py          # RRF correctness + URL dedupe
-  test_orchestrator.py    # merge, cache, degrade, error paths
-  test_extractor.py       # HTML/text/PDF extraction
-  test_rerank.py          # rerank boosting
-  test_chunker.py         # chunking/token estimation
-  test_ratelimit.py       # rate-limit windows + auth hash
-  test_own_index.py       # URL normalization, renderer routing, embedding singleton
+  test_fusion.py               # RRF correctness + URL dedupe
+  test_orchestrator.py         # merge, cache, pagination, degrade, error paths
+  test_extractor.py            # HTML/text/PDF extraction + content-type dispatch
+  test_rerank.py               # rerank boosting
+  test_chunker.py              # chunking + token budget enforcement
+  test_ratelimit.py            # rate-limit windows + auth hash
+  test_own_index.py            # URL normalization, renderer routing, embedding singleton
+  test_security.py             # SSRF egress policy, CORS, settings validation, auth throttling
+  test_robots.py               # RFC 9309 parsing: wildcards, UA groups, caching
+  test_api_http.py             # HTTP contract: query-param binding, error envelope, 413/422
+  test_mcp.py                  # MCP tool contracts, param handling, transport auth
+  test_integration_db.py       # real Postgres: FTS/vector SQL, dedupe, upserts  [TEST_DATABASE_URL]
+  test_integration_redis.py    # real Redis: INCR+EXPIRE atomicity, cache keys     [TEST_REDIS_URL]
+  test_mcp_e2e.py              # real MCP client over stdio / SSE / Streamable HTTP  [TEST_MCP_*]
+```
+
+```bash
+docker run -d --name searchos-test-pg -p 15432:5432 \
+  -e POSTGRES_USER=searchos -e POSTGRES_PASSWORD=searchos -e POSTGRES_DB=searchos \
+  pgvector/pgvector:pg16
+docker run -d --name searchos-redis -p 16380:6379 redis:7-alpine
+export TEST_DATABASE_URL=postgresql+asyncpg://searchos:searchos@127.0.0.1:15432/searchos
+export TEST_REDIS_URL=redis://127.0.0.1:16380/0
+make test
 ```
 
 Assets are generated from `tools/`:

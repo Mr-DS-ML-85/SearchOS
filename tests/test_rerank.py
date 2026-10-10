@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from app.search.rerank import Reranker
 from app.schemas import SearchResult
+from app.search.rerank import Reranker
 
 
-def mk(title: str, score: float = 1.0, published: str | None = None, source: str = "local", domain: str = "example.com", url: str | None = None) -> SearchResult:
+def mk(
+    title: str,
+    score: float = 1.0,
+    published: str | None = None,
+    source: str = "local",
+    domain: str = "example.com",
+    url: str | None = None,
+) -> SearchResult:
     return SearchResult(
         title=title,
         url=url or f"https://{domain}/{abs(hash(title))}",

@@ -4,23 +4,24 @@ import enum
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
-    UniqueConstraint,
+    cast,
     func,
+    literal_column,
+    text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, REGCONFIG
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from pgvector.sqlalchemy import Vector
 
 from app.config import EMBEDDING_DIM
 from app.db import Base
@@ -74,7 +75,7 @@ class Document(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    chunks: Mapped[list["Chunk"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+    chunks: Mapped[list[Chunk]] = relationship(back_populates="document", cascade="all, delete-orphan")
 
 
 class Chunk(Base):
@@ -100,8 +101,10 @@ class IngestJob(Base):
     status: Mapped[IngestJobStatus] = mapped_column(
         Enum(IngestJobStatus, name="ingest_job_status"), default=IngestJobStatus.pending, index=True
     )
-    attempts: Mapped[int] = mapped_column(Integer, default=0)
-    depth: Mapped[int] = mapped_column(Integer, default=0)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    depth: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Backoff gate: a requeued job is not claimable until this instant.
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -116,7 +119,67 @@ class UsageLog(Base):
     endpoint: Mapped[str] = mapped_column(String(64))
     status_code: Mapped[int] = mapped_column(Integer)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
-__all__ = ["ApiKey", "ApiKeyRole", "Document", "Chunk", "IngestJob", "IngestJobStatus", "IngestKind", "UsageLog", "Base"]
+# ---------------------------------------------------------------------------
+# Functional indexes.
+#
+# These were previously created only as raw SQL inside migration 0001, which
+# left them absent from Base.metadata. Any schema produced by
+# ``create_all()`` — used by the integration tests, and by anyone who
+# autogenerates against a fresh database — silently had no FTS or vector index,
+# so both providers degraded to sequential scans with no error. Declaring them
+# here keeps metadata and migrations in sync.
+#
+# The FTS expression must stay byte-identical to the one in
+# app/search/local_index.py: if they diverge the GIN index is still created but
+# the planner stops using it.
+# ---------------------------------------------------------------------------
+
+DOC_TSVECTOR = func.to_tsvector(
+    # Cast required: SQLAlchemy would otherwise bind 'english' as an untyped
+    # parameter, which Postgres rejects for regconfig ("No literal value
+    # renderer is available ... with datatype REGCONFIG").
+    cast(literal_column("'english'"), REGCONFIG),
+    func.coalesce(Document.title, "").op("||")(" " + func.coalesce(Document.content_text, "")),
+)
+
+Document.__table__.append_constraint(Index("ix_documents_fts", DOC_TSVECTOR, postgresql_using="gin"))
+
+# pgvector's HNSW access method takes the opclass as part of the column spec
+# (`USING hnsw (embedding vector_cosine_ops)`), not as a WITH parameter, and
+# neither SQLAlchemy nor pgvector's Vector type exposes an opclass option. The
+# unary operator renders the required syntax; the NULL operand is emitted but
+# discarded by Postgres' grammar for an opclass reference.
+Chunk.__table__.append_constraint(
+    Index(
+        "ix_chunks_embedding",
+        # Raw text is the only way to express pgvector's opclass reference:
+        # `USING hnsw (embedding vector_cosine_ops)`. SQLAlchemy has no opclass
+        # option on Index, and pgvector's Vector type does not expose one either.
+        text("embedding vector_cosine_ops"),
+        postgresql_using="hnsw",
+    )
+)
+
+# The recrawler scans by (status, fetched_at) and the local provider filters on
+# status; without these both are sequential scans on a large corpus.
+Index("ix_documents_fetched_at", Document.fetched_at)
+Index("ix_documents_status", Document.status)
+Index("ix_ingest_jobs_created_at", IngestJob.created_at)
+Index("ix_ingest_jobs_next_attempt_at", IngestJob.next_attempt_at)
+
+
+__all__ = [
+    "ApiKey",
+    "ApiKeyRole",
+    "Document",
+    "Chunk",
+    "IngestJob",
+    "IngestJobStatus",
+    "IngestKind",
+    "UsageLog",
+    "Base",
+    "DOC_TSVECTOR",
+]

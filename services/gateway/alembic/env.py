@@ -1,22 +1,41 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
+from app import models  # noqa: F401  ensure models are registered
+from app.config import Settings, get_settings
+from app.db import Base
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-
-from app.config import get_settings
-from app.db import Base
-from app import models  # noqa: F401  ensure models are registered
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-settings = get_settings()
+
+def _migration_settings() -> Settings:
+    """Settings for migrations, which must not require runtime secrets.
+
+    ``alembic upgrade head`` needs only the database URL. Requiring
+    BOOTSTRAP_ADMIN_API_KEY (or anything else auth-related) meant migrations
+    could not run without the full runtime environment, which broke CI and any
+    migration-only container.
+    """
+    try:
+        return get_settings()
+    except Exception:
+        return Settings(
+            _env_file=None,
+            auth_enabled=False,
+            database_url=os.environ.get("DATABASE_URL"),
+        )
+
+
+settings = _migration_settings()
 config.set_main_option("sqlalchemy.url", settings.db_url.replace("%", "%%"))
 
 target_metadata = Base.metadata

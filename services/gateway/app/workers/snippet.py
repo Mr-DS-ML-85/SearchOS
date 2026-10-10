@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.cache import get_cache
@@ -34,9 +34,7 @@ async def enrich_snippets(session_factory: async_sessionmaker, urls: list[str]) 
         try:
             norm = normalize_url(url)
             async with session_factory() as session:
-                existing = await session.scalar(
-                    select(Document).where(Document.normalized_url == norm)
-                )
+                existing = await session.scalar(select(Document).where(Document.normalized_url == norm))
                 if existing and existing.content_text:
                     is_snippet = (existing.meta or {}).get(SNIPPET_META_FLAG) is True
                     if not is_snippet:
@@ -46,9 +44,7 @@ async def enrich_snippets(session_factory: async_sessionmaker, urls: list[str]) 
             if not extracted.content.strip():
                 continue
             async with session_factory() as session:
-                doc = await session.scalar(
-                    select(Document).where(Document.normalized_url == norm)
-                )
+                doc = await session.scalar(select(Document).where(Document.normalized_url == norm))
                 if doc is None:
                     doc = Document(url=url, normalized_url=norm, status="indexed")
                     session.add(doc)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.cache import cache_key
 from app.schemas import SearchRequest, SearchResult
 from app.search.base import ProviderQuery, ProviderResult
@@ -10,16 +9,26 @@ from app.search.rerank import Reranker
 
 
 class FakeProvider:
+    """Provider double that behaves like a real one.
+
+    It honours ``num_results`` and asserts that the orchestrator sends
+    ``offset=0`` — providers must never paginate, because that previously
+    double-counted the offset and made results 11-20 unreachable.
+    """
+
     def __init__(self, name: str, results: list[SearchResult], error: str | None = None):
         self.name = name
         self._results = results
         self._error = error
+        self.seen_offsets: list[int] = []
 
     async def search(self, query: ProviderQuery) -> ProviderResult:
+        self.seen_offsets.append(query.offset)
+        rows = self._results[: query.num_results] if self._results else []
         return ProviderResult(
             provider=self.name,
             query=query.q,
-            results=[self._results[i % len(self._results)] for i in range(min(len(self._results), query.num_results))] if self._results else [],
+            results=[r.model_copy() for r in rows],
             error=self._error,
         )
 
@@ -69,14 +78,36 @@ async def test_orchestrator_degrades_when_provider_fails(cache):
     assert len(resp.results) == 1
 
 
-async def test_orchestrator_raises_when_all_providers_fail(cache):
+async def test_orchestrator_raises_provider_error_when_all_fail(cache):
+    """All providers down is an upstream outage (502), not "no matches" (404)."""
     p1 = FakeProvider("local", [], error="down")
     orch = SearchOrchestrator(providers={"local": p1}, cache=cache)
 
-    from app.errors import SearchNoResultsError
+    from app.errors import ProviderError
 
-    with pytest.raises(SearchNoResultsError):
+    with pytest.raises(ProviderError):
         await orch.search(SearchRequest(q="test", cache=False))
+
+
+async def test_orchestrator_returns_empty_page_when_no_matches(cache):
+    """A healthy provider with zero matches is a valid empty 200, not an error."""
+    p1 = FakeProvider("local", [])
+    orch = SearchOrchestrator(providers={"local": p1}, cache=cache)
+
+    resp = await orch.search(SearchRequest(q="test", cache=False))
+    assert resp.results == []
+    assert resp.total == 0
+    assert resp.degraded == []
+
+
+async def test_orchestrator_raises_when_no_provider_configured(cache):
+    """sources=web with no web provider must explain itself, not silently 404."""
+    orch = SearchOrchestrator(providers={"local": FakeProvider("local", [])}, cache=cache)
+
+    from app.errors import ProviderError
+
+    with pytest.raises(ProviderError, match="No search provider is configured"):
+        await orch.search(SearchRequest(q="test", sources="web", cache=False))
 
 
 def test_cache_key_is_stable_and_bounded():
@@ -97,13 +128,37 @@ async def test_orchestrator_paginates_with_offset(cache):
 
     page1 = await orch.search(SearchRequest(q="test", num_results=10, offset=0, cache=False))
     page2 = await orch.search(SearchRequest(q="test", num_results=10, offset=10, cache=False))
+    page3 = await orch.search(SearchRequest(q="test", num_results=10, offset=20, cache=False))
+    page4 = await orch.search(SearchRequest(q="test", num_results=10, offset=30, cache=False))
 
+    # No gaps: page 2 starts exactly where page 1 ends. Previously the offset
+    # was applied both in SQL and in the orchestrator, so page 2 skipped 11-20.
     assert len(page1.results) == 10
     assert len(page2.results) == 10
-    assert page1.results[0].url != page2.results[0].url
+    assert len(page3.results) == 10
+    assert page1.results[-1].url == "https://a.com/10"
+    assert page2.results[0].url == "https://a.com/11"
+    assert page3.results[0].url == "https://a.com/21"
+
+    # Past the end is an empty 200, not a 404.
+    assert page4.results == []
+    assert page4.total == 30
+
     assert page1.results[0].rank == 1
     assert page2.results[0].rank == 11
-    assert page1.results[9].url != page2.results[0].url
+    assert page3.results[0].rank == 21
+
+    # total is the fused match count, stable across pages
+    assert page1.total == page2.total == page3.total == 30
+
+    # Providers never receive a non-zero offset.
+    assert set(p1.seen_offsets) == {0}
+
+
+async def test_cache_key_distinguishes_pages_and_filters(cache):
+    k0 = cache_key("search", "q", "all", 10, None, "all")
+    k10 = cache_key("search", "q", "all", 20, None, "all")
+    assert k0 != k10
 
 
 async def test_orchestrator_num_results_exceeds_rerank_top_k(cache):

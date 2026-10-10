@@ -10,15 +10,38 @@ docker compose --profile web up -d --build
 docker compose ps
 ```
 
+### Embeddings (optional, ~3 GB)
+
+The worker container embeds chunks via `sentence-transformers` (model: `BAAI/bge-small-en-v1.5`, 384-dim) using pgvector for cosine-similarity search. This is **opt-in** to keep the base image small:
+
+```bash
+# Enable (builds with sentence-transformers + torch, downloads model on first run)
+INSTALL_EMBEDDINGS=1 docker compose build worker && docker compose up -d worker
+
+# Disable (FTS-only mode — worker indexes Postgres FTS, no vector search)
+INSTALL_EMBEDDINGS=0 docker compose build worker && docker compose up -d worker
+```
+
+Default in `docker-compose.yml` is `1`. Without it, `searchos_stats` shows `embedding_coverage: 0.0` and `vector_search_available: false`.
+
 Tear down without losing data: `docker compose down` (keep volumes). Full reset: `docker compose down -v`.
 
 ## Health gates
 
-The gateway refuses traffic until Postgres and Redis pass `/health/ready`:
-
 ```bash
 curl -s http://localhost:8000/health/ready
 ```
+
+`/health/ready` always returns HTTP 200 and reports component state in the
+`status` and `services` fields — it does **not** block traffic. There is no
+middleware that gates requests on readiness. If you need fail-fast behaviour,
+have your client check `status == "ok"`; a gateway with Postgres down returns
+200 from the probes and then fails on the first real query.
+
+`/health/live` is the process-level liveness probe used by the Docker
+`HEALTHCHECK`. `/stats` and `/metrics` require an API key when
+`RATE_LIMIT_HEALTH_ENDPOINTS=true` (the default) because `/stats` runs `COUNT(*)`
+over tables that can hold millions of rows.
 
 ## Backups
 

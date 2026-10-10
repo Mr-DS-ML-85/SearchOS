@@ -19,7 +19,8 @@ CYAN = "#22d3ee"
 WHITE = "#ffffff"
 SLATE = "#94a3b8"
 BANNER_W = 1700
-FONT = 'font-family="Inter, -apple-system, \'Segoe UI\', Roboto, sans-serif"'
+FONT = "font-family=\"Inter, -apple-system, 'Segoe UI', Roboto, sans-serif\""
+
 
 def banner() -> str:
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BANNER_W} 300" width="{BANNER_W}" height="300">
@@ -81,6 +82,7 @@ def banner() -> str:
 
 <rect x="300" y="238" width="180" height="8" rx="4" fill="url(#bar)"/>
 </svg>"""
+
 
 def main() -> None:
     os.makedirs(OUT, exist_ok=True)

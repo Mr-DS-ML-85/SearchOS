@@ -47,7 +47,7 @@ BADGES = [
     ("ci", "rocket", "Tests", "34 passed", "#475569"),
 ]
 
-FONT = 'font-family="Inter, -apple-system, \'Segoe UI\', Roboto, sans-serif"'
+FONT = "font-family=\"Inter, -apple-system, 'Segoe UI', Roboto, sans-serif\""
 
 # Layout constants (px at 28px badge height).
 ICON_X, ICON_SIZE = 10, 14
@@ -82,9 +82,23 @@ def _measure(s: str, size: float) -> float:
     except Exception:
         # fallback: per-character advance classes at 1em
         classes = {
-            "W": 1.0, "M": 0.96, "@": 0.9, "g": 0.76, "d": 0.74, "A": 0.72,
-            "e": 0.66, "S": 0.66, "o": 0.65, "a": 0.62, "n": 0.62, "r": 0.5,
-            "i": 0.3, "l": 0.32, ".": 0.25, " ": 0.28, "+": 0.66,
+            "W": 1.0,
+            "M": 0.96,
+            "@": 0.9,
+            "g": 0.76,
+            "d": 0.74,
+            "A": 0.72,
+            "e": 0.66,
+            "S": 0.66,
+            "o": 0.65,
+            "a": 0.62,
+            "n": 0.62,
+            "r": 0.5,
+            "i": 0.3,
+            "l": 0.32,
+            ".": 0.25,
+            " ": 0.28,
+            "+": 0.66,
         }
         default = 0.58
         return sum(classes.get(ch, default) for ch in s) * size

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 import redis.asyncio as redis
@@ -50,13 +49,58 @@ class Cache:
             return False
 
     async def incr(self, key: str, ttl_seconds: int = 60) -> int:
+        """Increment a counter and (re)set its TTL atomically.
+
+        The old version ran ``INCR`` then ``EXPIRE`` only when the result was 1.
+        A crash between the two left the key with no TTL, and because the value
+        was then greater than 1 the TTL was never retried — permanently locking
+        that API key out of every rate-limit window until someone deleted the
+        key by hand. A Lua script makes both operations indivisible.
+        """
+        script = "local v = redis.call('INCR', KEYS[1]) redis.call('EXPIRE', KEYS[1], ARGV[1]) return v"
         try:
-            value = await self._client.incr(key)
-            if value == 1:
-                await self._client.expire(key, ttl_seconds)
+            value = await self._client.eval(script, 1, key, str(ttl_seconds))
             return int(value)
         except Exception:
-            return 0
+            # Fall back for clients without EVAL support (e.g. the test double).
+            try:
+                value = await self._client.incr(key)
+                await self._client.expire(key, ttl_seconds)
+                return int(value)
+            except Exception:
+                return 0
+
+    async def acquire_lock(self, key: str, ttl_seconds: int = 10) -> bool:
+        """Best-effort single-flight lock to stop a cache stampede."""
+        try:
+            return bool(await self._client.set(key, "1", ex=ttl_seconds, nx=True))
+        except Exception:
+            return True  # fail open: better to duplicate work than to block
+
+    async def release_lock(self, key: str) -> bool:
+        try:
+            return bool(await self._client.delete(key))
+        except Exception:
+            return False
+
+    async def invalidate(self, pattern: str) -> int:
+        """Delete every key matching ``pattern`` (used by admin cache flush).
+
+        Uses SCAN so it never blocks the Redis event loop on a large keyspace.
+        """
+        removed = 0
+        try:
+            batch: list[str] = []
+            async for key in self._client.scan_iter(match=pattern, count=500):
+                batch.append(key)
+                if len(batch) >= 500:
+                    removed += int(await self._client.delete(*batch))
+                    batch = []
+            if batch:
+                removed += int(await self._client.delete(*batch))
+        except Exception:
+            return removed
+        return removed
 
     async def add_to_set(self, key: str, member: str) -> bool:
         try:
@@ -107,10 +151,17 @@ async def close_cache() -> None:
 
 
 def cache_key(prefix: str, *parts: Any) -> str:
-    key = ":".join(str(p) for p in parts)
-    if len(key) > 400:
+    """Build a cache key that cannot collide across different parameter sets.
+
+    The previous implementation joined parts with ``":"``, so
+    ``(language="b", country="c")`` and ``(language="b:c", country="all")``
+    produced the same key and one tenant could be served another tenant's
+    response. Parts are now JSON-encoded and hashed when the key gets long.
+    """
+    encoded = json.dumps(parts, separators=(",", ":"), ensure_ascii=False, default=str)
+    if len(encoded) > 400:
         import hashlib
 
-        digest = hashlib.sha256(key.encode()).hexdigest()[:32]
-        key = key[:340] + ":" + digest
-    return f"{prefix}:{key}"
+        digest = hashlib.sha256(encoded.encode()).hexdigest()[:32]
+        encoded = encoded[:340] + ":" + digest
+    return f"{prefix}:{encoded}"

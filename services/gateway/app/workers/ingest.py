@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from html import unescape as html_unescape
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -28,13 +28,75 @@ _LINK_RE = re.compile(r'<a[^>]+href=["\']\s*([^"\' >\s]+)["\']', re.IGNORECASE)
 
 
 def normalize_url(url: str) -> str:
+    """Canonical key for dedupe: lowercases host, drops default port and 'www.'.
+
+    Previously http vs https, :443, and the ``www.`` prefix all produced
+    different keys for the same page, so the same document could be indexed
+    several times (docs/searxng.md claimed www. was stripped; it was not).
+    """
     from urllib.parse import urlsplit
 
     parsed = urlsplit(url)
     scheme = (parsed.scheme or "http").lower()
-    netloc = (parsed.netloc or "").lower()
-    path = parsed.path or "/"
-    return f"{scheme}://{netloc}{path}".rstrip("/")
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        host = f"{host}:{port}"
+    path = parsed.path or ""
+    path = path.rstrip("/")
+    base = f"{scheme}://{host}"
+    return f"{base}{path}" if path else base
+
+
+_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%d %H:%M:%S%z",
+    "%Y/%m/%d",
+    "%d %B %Y",
+    "%B %d, %Y",
+    "%d %b %Y",
+)
+
+
+def _parse_published(value: object) -> datetime | None:
+    """Coerce trafilatura's ``published`` metadata into a datetime.
+
+    trafilatura hands back free-form strings ("2001-08-25", "25 August 2001"),
+    but ``documents.published_at`` is timestamptz. Passing the string straight
+    through made asyncpg raise and failed the whole ingest — which is how a
+    previously hardcoded ``published_at=None`` (that silently discarded the date)
+    came to be.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    logger.debug("unrecognised published date %r; storing NULL", text)
+    return None
 
 
 async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob) -> None:
@@ -62,19 +124,46 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
             lang=extracted.language,
             source="ingest",
             author=extracted.author,
-            published_at=None,
-            fetched_at=datetime.now(timezone.utc),
+            # Previously hardcoded to None, so extracted publish dates were
+            # parsed and discarded and the reranker's freshness boost never
+            # fired for crawled documents.
+            published_at=_parse_published(extracted.published),
+            fetched_at=datetime.now(UTC),
             status="indexed",
         )
 
-        chunks = chunk_text(content)
+        chunks = chunk_text(
+            content,
+            max_tokens=settings.chunk_max_tokens,
+            overlap_tokens=settings.chunk_overlap_tokens,
+        )
         vectors: list[list[float]] | None = None
         embedding = get_embedding_provider()
+        embedding_skipped_reason: str | None = None
         if embedding.available:
             try:
                 vectors = await embedding.embed(chunks)
             except Exception as e:
+                # Non-fatal: the document is still FTS-searchable. Count it so a
+                # silent embedding outage is visible, and re-queue a backfill.
+                embedding_skipped_reason = "error"
                 logger.warning("embedding failed for %s: %s", job.url, e)
+                get_metrics().embedding_failures.inc()
+        else:
+            # The embedder is not installed / not loaded. Previously this was a
+            # completely silent branch: documents were written with
+            # status='indexed' and zero vectors, the vector provider reported
+            # itself unavailable, and nothing anywhere said so. A search index
+            # with no vectors still answers queries — just lexically — which is
+            # exactly the kind of degradation nobody notices.
+            embedding_skipped_reason = "unavailable"
+            get_metrics().embedding_skipped.labels(reason="unavailable").inc()
+            logger.warning(
+                "indexing %s without embeddings: the embedding provider is unavailable "
+                "(is sentence-transformers installed? set INSTALL_EMBEDDINGS=1 to build it). "
+                "Retrieval will fall back to keyword-only for this and all other documents.",
+                job.url,
+            )
 
         async with session_factory() as session:
             existing = await session.scalar(
@@ -108,73 +197,189 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
             await session.execute(
                 update(IngestJob)
                 .where(IngestJob.id == job.id)
-                .values(status=IngestJobStatus.done, finished_at=datetime.now(timezone.utc))
+                .values(status=IngestJobStatus.done, finished_at=datetime.now(UTC))
             )
             await session.commit()
 
         get_metrics().documents_indexed.inc()
         get_metrics().chunks_indexed.inc(len(chunks))
-        logger.info("indexed %s (%d chunks)", job.url, len(chunks))
+        if embedding_skipped_reason:
+            get_metrics().documents_without_vectors.inc()
+        if vectors is None and embedding_skipped_reason is None:
+            get_metrics().embedding_skipped.labels(reason="no_vectors").inc()
+        logger.info(
+            "indexed %s (%d chunks, %s)",
+            job.url,
+            len(chunks),
+            f"{len(vectors)} vectors" if vectors else "no vectors (keyword-only)",
+        )
 
         await _discover_and_enqueue(session_factory, job, page)
+
+        # The corpus just changed, so any cached search result is now stale.
+        # Without this, a re-crawl was invisible for up to
+        # search_cache_ttl_seconds and the only symptom was empty results served
+        # with `cache_hit: true, took_ms: 0` — a stale answer that looks healthy.
+        try:
+            from app.cache import get_cache
+
+            await get_cache().invalidate("search:*")
+        except Exception:
+            pass
     except Exception as e:
         logger.warning("ingest failed for %s: %s", job.url, e)
         await _mark_job_failed(session_factory, job, str(e))
 
 
+def _is_permanent_error(error: str) -> bool:
+    """Decide whether re-trying could ever succeed.
+
+    Every failure used to consume all ``worker_max_attempts`` with exponential
+    backoff, so a plain 404 sat in ``pending`` for a minute before finally
+    failing. The symptom is exactly the one reported in the bug report: a job
+    that is never going to succeed keeps looking like it might, and ``pending``
+    becomes indistinguishable from a genuinely slow origin.
+
+    Retry is pointless when the origin has definitively answered.
+    """
+    text = (error or "").lower()
+
+    if "http 404" in text or "http 410" in text or "http 401" in text or "http 403" in text:
+        return True
+    if "page not found" in text or "blocked by robots" in text:
+        return True
+    if "unsupported content type" in text or "cannot extract content" in text:
+        return True
+    if "refused by egress policy" in text:
+        return True
+    if "invalid url" in text or "no address associated" in text:
+        return True
+    return False
+
+
 async def _mark_job_failed(session_factory: async_sessionmaker, job: IngestJob, error: str) -> None:
+    """Requeue with exponential backoff, or fail permanently.
+
+    Previously a failed job returned to ``pending`` with its original
+    ``created_at``, so it was immediately re-claimed (still the oldest row) and
+    all three attempts burned within milliseconds. Retry-After from the origin
+    is not modelled, but the backoff prevents a hot retry loop against a flaky
+    origin. Permanent failures skip the retries entirely.
+    """
     settings = get_settings()
+    permanent = _is_permanent_error(error)
     async with session_factory() as session:
-        if job.attempts < settings.worker_max_attempts:
+        if permanent:
+            status = IngestJobStatus.failed
+            delay = 0
+        elif job.attempts < settings.worker_max_attempts:
             status = IngestJobStatus.pending
+            delay = settings.worker_retry_base_seconds * (2 ** (max(job.attempts, 1) - 1))
         else:
             status = IngestJobStatus.failed
-        await session.execute(
-            update(IngestJob)
-            .where(IngestJob.id == job.id)
-            .values(status=status, last_error=error, finished_at=datetime.now(timezone.utc))
-        )
+            delay = 0
+        values = {"status": status, "last_error": error[:2000]}
+        if status == IngestJobStatus.pending:
+            # finished_at is only meaningful for a terminal state.
+            values["next_attempt_at"] = datetime.now(UTC) + timedelta(seconds=delay)
+        else:
+            values["finished_at"] = datetime.now(UTC)
+        await session.execute(update(IngestJob).where(IngestJob.id == job.id).values(**values))
         await session.commit()
     if status == IngestJobStatus.pending:
-        logger.info("requeued %s (attempt %d/%d)", job.url, job.attempts, settings.worker_max_attempts)
+        logger.info(
+            "requeued %s (attempt %d/%d, retry in %ds)",
+            job.url,
+            job.attempts,
+            settings.worker_max_attempts,
+            delay,
+        )
+    else:
+        if permanent:
+            logger.info(
+                "permanent failure for %s on attempt %d, not retrying: %s",
+                job.url,
+                job.attempts,
+                error,
+            )
+        else:
+            logger.warning("giving up on %s after %d attempts: %s", job.url, job.attempts, error)
+
+
+def _parse_sitemap(payload: bytes) -> list[str]:
+    """Extract <loc> values from a sitemap.
+
+    Uses defusedxml when available: ``xml.etree.ElementTree`` is vulnerable to
+    entity-expansion ("billion laughs") and external-entity attacks, and a
+    sitemap is attacker-supplied input. Falls back to ElementTree with entity
+    resolution disabled if defusedxml is not installed.
+    """
+    try:
+        from defusedxml.ElementTree import fromstring as safe_fromstring
+
+        root = safe_fromstring(payload)
+    except ImportError:  # pragma: no cover - defusedxml is a hard dependency
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(payload)  # noqa: S314 - defusedxml is a hard dependency
+    return [loc.text.strip() for loc in root.iter("{*}loc") if loc.text and loc.text.strip()]
 
 
 async def _process_sitemap(session_factory: async_sessionmaker, job: IngestJob) -> None:
-    import xml.etree.ElementTree as ET
-
     from app.http import get_http_client
+    from app.netguard import BlockedURLError, validate_url
 
     try:
-        resp = await get_http_client().get(job.url, timeout=30.0)
+        # Sitemaps used to be fetched with the raw shared client, bypassing
+        # robots, the content-type check, the size limit and the SSRF guard.
+        validate_url(job.url)
+        resp = await get_http_client().get(job.url, timeout=30.0, follow_redirects=True)
         resp.raise_for_status()
-        root = ET.fromstring(resp.content)
-        urls = [loc.text for loc in root.iter("{*}loc") if loc.text]
+        if len(resp.content) > get_settings().extract_max_bytes * 4:
+            raise ValueError("sitemap exceeds the configured size limit")
+        urls = _parse_sitemap(resp.content)
+        limit = get_settings().crawler_max_urls_per_seed
+        urls = urls[:limit]
+        kept: list[str] = []
+        for u in urls:
+            try:
+                validate_url(u)
+            except BlockedURLError:
+                continue
+            kept.append(u)
         async with session_factory() as session:
-            session.add_all(
-                [
-                    IngestJob(url=url, kind=IngestKind.url, status=IngestJobStatus.pending)
-                    for url in urls[:500]
-                ]
-            )
+            session.add_all([IngestJob(url=url, kind=IngestKind.url, status=IngestJobStatus.pending) for url in kept])
             await session.execute(
                 update(IngestJob)
                 .where(IngestJob.id == job.id)
-                .values(status=IngestJobStatus.done, finished_at=datetime.now(timezone.utc))
+                .values(status=IngestJobStatus.done, finished_at=datetime.now(UTC))
             )
             await session.commit()
-        logger.info("enqueued %d urls from sitemap %s", min(len(urls), 500), job.url)
+        logger.info("enqueued %d urls from sitemap %s", len(kept), job.url)
     except Exception as e:
         logger.warning("sitemap failed for %s: %s", job.url, e)
         await _mark_job_failed(session_factory, job, str(e))
 
 
 async def ingest_worker_loop(session_factory: async_sessionmaker) -> None:
+    """Serial ingest loop.
+
+    A DB error here is caught and logged: an unhandled exception would propagate
+    out of asyncio.gather in the runner and kill *all three* worker loops, not
+    just ingest.
+    """
     settings = get_settings()
     while True:
-        job = await _claim_job(session_factory)
-        if job:
-            await process_ingest_job(session_factory, job)
-        else:
+        try:
+            job = await _claim_job(session_factory)
+            if job:
+                await process_ingest_job(session_factory, job)
+            else:
+                await asyncio.sleep(settings.worker_ingest_poll_interval_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("ingest loop error: %s: %s", e.__class__.__name__, e)
             await asyncio.sleep(settings.worker_ingest_poll_interval_seconds)
 
 
@@ -185,14 +390,21 @@ async def _claim_job(session_factory: async_sessionmaker) -> IngestJob | None:
     (``started_at`` older than ``worker_stale_job_seconds``).
     """
     settings = get_settings()
-    stale_cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.worker_stale_job_seconds)
+    stale_cutoff = datetime.now(UTC) - timedelta(seconds=settings.worker_stale_job_seconds)
+    due_cutoff = datetime.now(UTC)
     async with session_factory() as session:
         job = await session.scalar(
             select(IngestJob)
             .where(IngestJob.attempts < settings.worker_max_attempts)
             .where(
                 or_(
-                    IngestJob.status == IngestJobStatus.pending,
+                    and_(
+                        IngestJob.status == IngestJobStatus.pending,
+                        or_(
+                            IngestJob.next_attempt_at.is_(None),
+                            IngestJob.next_attempt_at <= due_cutoff,
+                        ),
+                    ),
                     and_(
                         IngestJob.status == IngestJobStatus.running,
                         IngestJob.started_at < stale_cutoff,
@@ -207,16 +419,21 @@ async def _claim_job(session_factory: async_sessionmaker) -> IngestJob | None:
             return None
         job.status = IngestJobStatus.running
         job.attempts += 1
-        job.started_at = datetime.now(timezone.utc)
+        job.started_at = datetime.now(UTC)
         await session.commit()
         return job
 
 
 def extract_outbound_links(html: str, base_url: str) -> list[str]:
-    """Extract absolute http(s) URLs from <a href> links in raw HTML."""
+    """Extract absolute http(s) URLs from real ``<a href>`` attributes.
+
+    The previous regex scanned raw HTML, so it also matched links inside HTML
+    comments and inside <script> string literals. We now drop comment, script,
+    style and noscript regions before matching.
+    """
     links = []
-    for m in _LINK_RE.finditer(html):
-        href = html_unescape(m.group(1)).strip()
+    for href in _iter_hrefs(html):
+        href = html_unescape(href).strip()
         if not href or href.startswith(("javascript:", "mailto:", "tel:", "data:", "#")):
             continue
         absolute = urljoin(base_url, href)
@@ -227,8 +444,38 @@ def extract_outbound_links(html: str, base_url: str) -> list[str]:
     return links
 
 
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_SCRIPT_RE = re.compile(r"<(script|style|noscript)\b[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+_HREF_RE = re.compile(
+    r"""<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""",
+    re.IGNORECASE,
+)
+
+
+def _strip_non_dom(html: str) -> str:
+    html = _COMMENT_RE.sub(" ", html)
+    return _SCRIPT_RE.sub(" ", html)
+
+
+def _iter_hrefs(html: str) -> list[str]:
+    for m in _HREF_RE.finditer(_strip_non_dom(html)):
+        yield next((g for g in m.groups() if g is not None), "")
+
+
+def _egress_allowed(url: str) -> bool:
+    """Sync egress check for discovered links (no DNS lookup)."""
+    from app.netguard import BlockedURLError, validate_url
+
+    try:
+        validate_url(url, check_dns=False)
+    except BlockedURLError:
+        return False
+    return True
+
+
 def _hostname(url: str) -> str:
-    return (urlsplit(url).netloc or "").lower()
+    """Hostname without port, lowercased, for domain-policy comparisons."""
+    return (urlsplit(url).hostname or "").lower()
 
 
 def _allowed_by_domain_policy(policy: str, target_host: str, seed_host: str) -> bool:
@@ -255,9 +502,13 @@ async def _discover_and_enqueue(session_factory: async_sessionmaker, job: Ingest
     links = extract_outbound_links(html, page.final_url or job.url)
     if settings.crawler_follow_domains != "all":
         links = [
-            u for u in links
-            if _allowed_by_domain_policy(settings.crawler_follow_domains, _hostname(u), seed_host)
+            u for u in links if _allowed_by_domain_policy(settings.crawler_follow_domains, _hostname(u), seed_host)
         ]
+    # A discovered link is attacker-controlled input; refuse internal targets
+    # before they ever become a job.
+    links = [u for u in links if _egress_allowed(u)]
+    if not links:
+        return
 
     robots = RobotsChecker()
     candidates: list[tuple[str, str]] = []
@@ -282,9 +533,13 @@ async def _discover_and_enqueue(session_factory: async_sessionmaker, job: Ingest
             (await session.scalars(select(Document.normalized_url).where(Document.normalized_url.in_(norms)))).all()
         )
         active = set(
-            (await session.scalars(
-                select(IngestJob.url).where(IngestJob.status.in_([IngestJobStatus.pending, IngestJobStatus.running]))
-            )).all()
+            (
+                await session.scalars(
+                    select(IngestJob.url).where(
+                        IngestJob.status.in_([IngestJobStatus.pending, IngestJobStatus.running])
+                    )
+                )
+            ).all()
         )
         active_norms = {normalize_url(u) for u in active}
         new_jobs = [
@@ -312,7 +567,7 @@ async def recrawl_worker_loop(session_factory: async_sessionmaker) -> None:
 
 async def _enqueue_stale_documents(session_factory: async_sessionmaker) -> None:
     settings = get_settings()
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.crawler_recrawl_after_seconds)
+    cutoff = datetime.now(UTC) - timedelta(seconds=settings.crawler_recrawl_after_seconds)
     async with session_factory() as session:
         stale = list(
             (
@@ -322,14 +577,20 @@ async def _enqueue_stale_documents(session_factory: async_sessionmaker) -> None:
                     .order_by(Document.fetched_at.asc())
                     .limit(settings.crawler_recrawl_batch)
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         if not stale:
             return
         active = set(
-            (await session.scalars(
-                select(IngestJob.url).where(IngestJob.status.in_([IngestJobStatus.pending, IngestJobStatus.running]))
-            )).all()
+            (
+                await session.scalars(
+                    select(IngestJob.url).where(
+                        IngestJob.status.in_([IngestJobStatus.pending, IngestJobStatus.running])
+                    )
+                )
+            ).all()
         )
         active_norms = {normalize_url(u) for u in active}
         new_jobs = [

@@ -53,6 +53,31 @@ class Metrics:
         self.documents_indexed = Counter("searchos_documents_indexed_total", "Documents indexed")
         self.chunks_indexed = Counter("searchos_chunks_indexed_total", "Chunks indexed")
         self.queue_depth = Gauge("searchos_queue_depth", "Pending ingest jobs")
+        self.embedding_failures = Counter(
+            "searchos_embedding_failures_total",
+            "Documents indexed without embeddings because the embedder raised",
+        )
+        self.embedding_skipped = Counter(
+            "searchos_embedding_skipped_total",
+            "Documents indexed without embeddings, by reason (unavailable|error|no_vectors)",
+            ["reason"],
+        )
+        self.documents_without_vectors = Counter(
+            "searchos_documents_without_vectors_total",
+            "Documents stored with no embedding vectors (keyword-only retrieval)",
+        )
+        self.ingest_jobs_running = Gauge("searchos_ingest_jobs_running", "Ingest jobs currently running")
+        self.ingest_jobs_failed = Gauge("searchos_ingest_jobs_failed", "Ingest jobs failed after retries")
+        self.auth_failures = Counter(
+            "searchos_auth_failures_total",
+            "Failed authentication attempts",
+            ["reason"],
+        )
+        self.blocked_requests = Counter(
+            "searchos_blocked_requests_total",
+            "Requests refused by policy (SSRF, body size, private network)",
+            ["reason"],
+        )
 
 
 _metrics = Metrics()
@@ -63,6 +88,19 @@ def get_metrics() -> Metrics:
 
 
 def render_metrics() -> bytes:
-    from prometheus_client import generate_latest
+    """Render the registry, aggregating across uvicorn workers when configured.
 
+    With ``--workers 2`` each process has its own registry, so a scrape of the
+    single gateway target returned one random worker's numbers and roughly half
+    of all traffic was invisible. PROMETHEUS_MULTIPROC_DIR fixes that.
+    """
+    import os
+
+    from prometheus_client import CollectorRegistry, generate_latest, multiprocess
+
+    multiproc_dir = os.environ.get("PROMETHEUS_MULTIPROC_DIR", "").strip()
+    if multiproc_dir:
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry, path=multiproc_dir)
+        return generate_latest(registry)
     return generate_latest(REGISTRY)

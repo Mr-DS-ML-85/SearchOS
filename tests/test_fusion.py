@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import pytest
-
-from app.search.fusion import reciprocal_rank_fusion
 from app.schemas import SearchResult
+from app.search.fusion import reciprocal_rank_fusion
 
 
 def mk(title: str, url: str, source: str, score: float = 1.0, rank: int = 1) -> SearchResult:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
-import time
-from dataclasses import dataclass
+import json
+import re
+from dataclasses import dataclass, replace
 
+from app.errors import ValidationError
 from app.extract.fetcher import FetchedPage
 
 
@@ -97,13 +99,89 @@ def extract_pdf(content: bytes, *, content_type: str | None = None) -> Extracted
     )
 
 
-def extract_page(page: FetchedPage) -> ExtractedContent:
-    start = time.monotonic()
+def extract_page(page: FetchedPage, *, fmt: str = "text") -> ExtractedContent:
+    """Dispatch on content type.
+
+    Previously anything not PDF/plain/json — including image/png, application/zip
+    and application/octet-stream — was fed to the HTML extractor and failed
+    later with "empty extracted content". Binary types are now rejected up front.
+    """
     content_type = (page.content_type or "").lower()
-    if "application/pdf" in content_type:
-        extracted = extract_pdf(page.content, content_type=page.content_type)
-    elif "text/plain" in content_type or "json" in content_type:
-        extracted = extract_text(page.content, content_type=page.content_type)
-    else:
+    mime = content_type.split(";", 1)[0].strip()
+
+    # HTML must be checked *before* the generic text/ branch: text/html matches
+    # text/*, and testing text/ first returned raw markup instead of extracted
+    # article text.
+    if mime in ("text/html", "application/xhtml+xml") or mime.endswith("+xml"):
         extracted = extract_html(page.content, content_type=page.content_type)
-    return extracted
+    elif mime == "application/pdf" or mime.endswith("/pdf"):
+        extracted = extract_pdf(page.content, content_type=page.content_type)
+    elif mime.startswith("text/") or mime == "application/json" or mime.endswith("+json"):
+        extracted = extract_text(page.content, content_type=page.content_type)
+    elif not mime:
+        # No content-type header at all: try HTML, which is the common case.
+        extracted = extract_html(page.content, content_type=page.content_type)
+    else:
+        if mime.startswith(("image/", "audio/", "video/", "font/")):
+            raise ValidationError(f"cannot extract content of type {mime}")
+        raise ValidationError(f"unsupported content type: {mime}")
+
+    return _render(extracted, fmt, url=page.final_url or page.url)
+
+
+# ---------------------------------------------------------------------------
+# Output rendering
+# ---------------------------------------------------------------------------
+
+_HEADING_RE = re.compile(r"^#{1,6}\s*", re.MULTILINE)
+
+
+def _to_markdown(text: str) -> str:
+    """Lightweight text -> markdown.
+
+    trafilatura emits plain text, so the conversion is conservative: keep
+    headings recognisable and paragraphs separated, without pretending to be a
+    full HTML->markdown pass (which would mean re-parsing what we just
+    deliberately stripped).
+    """
+    paragraphs = [block.strip() for block in re.split(r"\n{2,}", text) if block.strip()]
+    return "\n\n".join(paragraphs)
+
+
+def _render(extracted: ExtractedContent, fmt: str, *, url: str | None = None) -> ExtractedContent:
+    """Render the extracted text into the requested output format.
+
+    ``format`` was previously accepted and ignored: `json` returned the exact
+    same bytes as `markdown`. A no-op flag is worse than no flag, so json now
+    emits a real JSON document and markdown actually produces markdown.
+    """
+    fmt = (fmt or "text").lower()
+
+    if fmt == "text":
+        return extracted
+
+    if fmt == "markdown":
+        return replace(
+            extracted,
+            content=_to_markdown(extracted.content),
+            content_type="text/markdown",
+        )
+
+    if fmt == "json":
+        payload = {
+            "url": url,
+            "title": extracted.title,
+            "language": extracted.language,
+            "author": extracted.author,
+            "published": extracted.published,
+            "content_type": extracted.content_type,
+            "content": extracted.content,
+            "content_format": "text",
+        }
+        return replace(
+            extracted,
+            content=json.dumps(payload, ensure_ascii=False, indent=2),
+            content_type="application/json",
+        )
+
+    raise ValidationError(f"unsupported extract format: {fmt}")

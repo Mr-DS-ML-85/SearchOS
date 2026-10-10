@@ -26,7 +26,10 @@ groups:
           summary: "Multiple search provider errors detected"
 
       - alert: HighLatency
-        expr: histogram_quantile(0.95, rate(searchos_search_duration_seconds_bucket[5m])) > 5
+        # Was missing `sum by (le)`, so histogram_quantile ran per-series and
+        # produced multiple outputs instead of the aggregate p95. The Grafana
+        # panel had it right; the alert and the dashboard disagreed.
+        expr: histogram_quantile(0.95, sum by (le) (rate(searchos_search_duration_seconds_bucket[5m]))) > 5
         for: 10m
         labels:
           severity: warning
@@ -48,3 +51,66 @@ groups:
           severity: warning
         annotations:
           summary: "High rate-limit rejections"
+
+      - alert: AuthFailureSpike
+        # Brute-force / credential-stuffing signal. Was previously uncounted.
+        expr: rate(searchos_auth_failures_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained failed authentication attempts"
+
+      - alert: SsrfBlockedSpike
+        # Clients probing internal addresses. A steady trickle is an attacker.
+        expr: rate(searchos_blocked_requests_total{reason="ssrf"}[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Repeated SSRF attempts refused by egress policy"
+
+      - alert: EmbedderFailures
+        # Documents indexed with no embeddings are invisible to vector search and
+        # are never backfilled, so this silently degrades recall.
+        expr: increase(searchos_embedding_failures_total[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Embedder failing; documents indexed without vectors"
+
+      - alert: CrawlerStalled
+        # queue_depth is now sampled on a timer in the gateway lifespan, so this
+        # fires when the worker stops draining the queue.
+        expr: searchos_queue_depth > 0 and searchos_ingest_jobs_running == 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ingest queue is not draining (no running jobs)"
+
+      - alert: IngestFailures
+        expr: searchos_ingest_jobs_failed > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingest jobs permanently failed after retries"
+
+      - alert: RendererDown
+        expr: up{job="renderer"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Renderer unreachable; extraction falls back to plain fetch"
+
+      - alert: DatabaseDown
+        expr: pg_up == 0 or absent(pg_up)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL metrics unavailable"
+

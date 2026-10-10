@@ -19,11 +19,23 @@ dependencies = [
     "prometheus-client>=0.20",
     "python-multipart>=0.0.9",
     "python-dotenv>=1.0",
-    "sentence-transformers>=2.7",
+    "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]
 test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
+# Opt-in: pulls torch + CUDA wheels (~3 GB). Without it the gateway runs
+# FTS-only and the `vector` provider reports itself unavailable, which is the
+# documented degraded mode (see app/embed/provider.py `available`).
+embeddings = [
+    "sentence-transformers>=2.7",
+]
+full = [
+    "sentence-transformers>=2.7",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "respx>=0.21",

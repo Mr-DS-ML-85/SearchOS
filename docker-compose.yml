@@ -5,12 +5,29 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-searchos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-searchos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-searchos}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    # Bound to loopback only. It used to publish on 0.0.0.0 with a guessable
+    # default password, exposing the whole index to the network.
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - work_mem=16MB
+    shm_size: 1gb
+    deploy:
+      resources:
+        limits:
+          memory: 4G
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-searchos}"]
       interval: 10s
@@ -20,16 +37,63 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    # maxmemory + an eviction policy: the previous config had neither, so the
+    # AOF grew without limit (it persists every cached extract page).
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - allkeys-lru
     volumes:
       - redisdata:/data
+    networks:
+      - backend
     ports:
-      - "${REDIS_PORT:-16379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-16379}:6379"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  # Streamable-HTTP MCP endpoint (POST /mcp). This is a protocol adapter, not an
+  # API: it holds no database access and forwards every tool call to the gateway
+  # over REST. Keeping it out of the gateway means the REST surface does not grow
+  # an MCP SDK dependency, and /mcp cannot leak gateway internals.
+  mcp:
+    profiles: ["mcp"]
+    build:
+      context: ./services/mcp
+      dockerfile: Dockerfile
+    environment:
+      SEARCHOS_URL: http://gateway:8000
+      SEARCHOS_API_KEY: ${SEARCHOS_API_KEY:-${BOOTSTRAP_ADMIN_API_KEY}}
+      SEARCHOS_ADMIN_KEY: ${BOOTSTRAP_ADMIN_API_KEY}
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8099"
+      MCP_STATELESS_HTTP: ${MCP_STATELESS_HTTP:-true}
+      # Required: the server refuses to bind 0.0.0.0 without a token, and
+      # publishing the port on all interfaces would otherwise expose the ingest
+      # admin key to anyone who can reach the host.
+      MCP_HTTP_TOKEN: ${MCP_HTTP_TOKEN:?set MCP_HTTP_TOKEN in .env to serve /mcp}
+      GATEWAY_TIMEOUT: ${GATEWAY_TIMEOUT:-60}
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8099}:8099"
+    depends_on:
+      gateway:
+        condition: service_started
+    networks:
+      - frontend
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   renderer:
@@ -40,8 +104,29 @@ services:
       RENDER_TIMEOUT_MS: ${RENDER_TIMEOUT_MS:-30000}
       MAX_RENDER_BYTES: ${RENDER_MAX_BYTES:-10485760}
       RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-4}
-    ports:
-      - "${RENDERER_PORT:-8010}:8010"
+      RENDERER_TOKEN: ${RENDERER_TOKEN:?set RENDERER_TOKEN in .env}
+      RENDERER_BLOCK_PRIVATE_NETWORKS: ${RENDERER_BLOCK_PRIVATE_NETWORKS:-true}
+      RENDERER_ALLOW_PRIVATE_NETWORKS: ${RENDERER_ALLOW_PRIVATE_NETWORKS:-}
+      RENDERER_DISABLE_SANDBOX: ${RENDERER_DISABLE_SANDBOX:-false}
+    # No host publish. /render takes an arbitrary URL and is a textbook SSRF
+    # proxy into this network (postgres:5432, redis:6379, 169.254.169.254);
+    # the gateway reaches it internally as http://renderer:8010.
+    expose:
+      - "8010"
+    networks:
+      - backend
+      # The renderer must reach the internet — rendering arbitrary pages is its
+      # job, and its egress guard needs working DNS to resolve targets before
+      # rejecting private addresses. Its protection against being used as an open
+      # SSRF proxy is: not published to the host, X-Renderer-Token required, and
+      # RENDERER_BLOCK_PRIVATE_NETWORKS=true.
+      - egress
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 3G
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8010/healthz || exit 1"]
       interval: 15s
@@ -54,69 +139,147 @@ services:
     image: searxng/searxng:latest
     environment:
       SEARXNG_BASE_URL: http://localhost:${SEARXNG_PORT:-8080}/
-      SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me-to-a-long-random-secret}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
       SEARXNG_SINGLE_USER: ${SEARXNG_SINGLE_USER:-admin:admin}
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     ports:
-      - "${SEARXNG_PORT:-8080}:8080"
+      - "127.0.0.1:${SEARXNG_PORT:-8080}:8080"
     depends_on:
       redis:
         condition: service_healthy
+    networks:
+      - backend
+      - egress
     restart: unless-stopped
 
   gateway:
     build:
       context: ./services/gateway
       dockerfile: Dockerfile
+      args:
+        # The gateway needs the embedder too, not just the worker. It embeds the
+        # *query* at search time, so without this the corpus gets vectors but no
+        # query can ever be compared against them and `vector_search_available`
+        # stays false forever.
+        INSTALL_EMBEDDINGS: ${INSTALL_EMBEDDINGS:-1}
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${GATEWAY_WORKERS:-2}"
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-searchos}:${POSTGRES_PASSWORD:-searchos}@postgres:5432/${POSTGRES_DB:-searchos}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-searchos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-searchos}
       REDIS_URL: redis://redis:6379/0
       RENDERER_URL: ${RENDERER_URL:-http://renderer:8010}
+      RENDERER_TOKEN: ${RENDERER_TOKEN}
       SEARXNG_URL: ${SEARXNG_URL:-}
       BOOTSTRAP_ADMIN_API_KEY: ${BOOTSTRAP_ADMIN_API_KEY:?set BOOTSTRAP_ADMIN_API_KEY in .env}
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      RATE_LIMIT_HEALTH_ENDPOINTS: ${RATE_LIMIT_HEALTH_ENDPOINTS:-true}
+      FETCH_BLOCK_PRIVATE_NETWORKS: ${FETCH_BLOCK_PRIVATE_NETWORKS:-true}
+      # Lets /metrics aggregate across uvicorn workers instead of reporting
+      # only whichever worker happened to serve the scrape.
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+    volumes:
+      - prommultiproc:/tmp/prometheus
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # service_started, not service_healthy: the renderer is optional and
+      # fetch_page falls back to a plain GET when it is unavailable. Gating on
+      # healthcheck made an optional dependency a hard boot requirement.
       renderer:
-        condition: service_healthy
+        condition: service_started
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    networks:
+      - frontend
+      - backend
+      - egress
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     restart: unless-stopped
 
   worker:
     build:
       context: ./services/gateway
       dockerfile: Dockerfile
+      args:
+        # The worker is what writes embeddings, so it opts in to torch. Set
+        # INSTALL_EMBEDDINGS=0 for a ~3 GB smaller image; the worker then indexes
+        # FTS-only and `search` reports no vector provider.
+        INSTALL_EMBEDDINGS: ${INSTALL_EMBEDDINGS:-1}
     command: ["python", "worker_entrypoint.py"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-searchos}:${POSTGRES_PASSWORD:-searchos}@postgres:5432/${POSTGRES_DB:-searchos}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-searchos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-searchos}
       REDIS_URL: redis://redis:6379/0
       RENDERER_URL: ${RENDERER_URL:-http://renderer:8010}
+      RENDERER_TOKEN: ${RENDERER_TOKEN}
       BOOTSTRAP_ADMIN_API_KEY: ${BOOTSTRAP_ADMIN_API_KEY:?set BOOTSTRAP_ADMIN_API_KEY in .env}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9101}
+      # The gateway is the single migration owner; see worker_entrypoint.py.
+      WORKER_RUN_MIGRATIONS: ${WORKER_RUN_MIGRATIONS:-false}
+    expose:
+      - "${WORKER_METRICS_PORT:-9101}"
+    # The image's HEALTHCHECK probes :8000/health/live, which only the gateway
+    # serves, so the worker inherited a check that could never pass. Probe the
+    # metrics endpoint the worker actually runs instead.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:${WORKER_METRICS_PORT:-9101}/metrics', timeout=3).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - backend
+      - egress
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 3G
     restart: unless-stopped
+
+  prom-token-init:
+    image: busybox:1.37
+    command:
+      - sh
+      - -c
+      - printf '%s' "$$BOOTSTRAP_ADMIN_API_KEY" > /token/gateway_token
+    environment:
+      BOOTSTRAP_ADMIN_API_KEY: ${BOOTSTRAP_ADMIN_API_KEY:?set BOOTSTRAP_ADMIN_API_KEY in .env}
+    volumes:
+      - promtoken:/token
+    networks:
+      - observability
+    restart: "no"
 
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.15.0
     environment:
       DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-searchos}:${POSTGRES_PASSWORD:-searchos}@postgres:5432/${POSTGRES_DB:-searchos}?sslmode=disable"
-    ports:
-      - "9187:9187"
+    expose:
+      - "9187"
     depends_on:
       - postgres
+    networks:
+      - backend
     restart: unless-stopped
 
   prometheus:
@@ -125,32 +288,62 @@ services:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - promdata:/prometheus
+      # Scrapes the gateway's authenticated /metrics. Generated at start so the
+      # admin key is not baked into the config file.
+      - promtoken:/etc/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=${PROM_RETENTION:-30d}"
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
-      - gateway
+      gateway:
+        condition: service_started
+      prom-token-init:
+        condition: service_completed_successfully
+    networks:
+      - observability
+      - backend
     restart: unless-stopped
 
   grafana:
     image: grafana/grafana:11.1.0
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafanadata:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
+    networks:
+      - observability
+      - frontend
     restart: unless-stopped
 
+networks:
+  # Host-facing bridge. Only services an operator reaches directly join it.
+  frontend:
+  # Datastore. `internal: true` means no route off the host, so a container here
+  # cannot be pivoted to the internet by anyone who reaches it.
+  backend:
+    internal: true
+  # Outbound internet. Only the gateway and the worker join it: the crawler has
+  # to fetch arbitrary pages, and nothing else needs egress.
+  #
+  # Note: the worker cannot live on `backend` alone — with `internal: true` its
+  # DNS and fetches fail and every crawl job dies with
+  # "cannot resolve host: ...".
+  egress:
+  observability:
+
 volumes:
+  prommultiproc:
+  promtoken:
   pgdata:
   redisdata:
   promdata:

@@ -1,0 +1,28 @@
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "S", "C4", "RET", "SIM"]
+ignore = [
+    "E501",     # long lines are handled by the formatter
+    "B008",     # Depends() in defaults is the FastAPI idiom
+    "S101",     # asserts are fine
+    "S104",     # 0.0.0.0 binds are intentional inside containers
+    "S105",     # config field names are not secrets
+    "S110",     # fail-open handlers are deliberate; see Cache docstrings
+    "SIM105",   # contextlib.suppress hides which errors are expected
+    "SIM102",   # nested ifs are clearer when each branch is commented
+    "SIM103",   # explicit form documents intent
+    "SIM117",   # nested with-blocks mirror the transaction structure
+    "UP017",    # datetime.UTC needs 3.11+ and we support 3.11 exactly
+    "UP042",    # str+Enum is what SQLAlchemy's Enum type expects
+    "ASYNC109", # timeout parameters are passed through to httpx by design
+    "B905",     # zip(strict=) is applied where lengths are guaranteed
+    "RET504",   # assignment before return is often clearer
+    "S608",     # SQL is assembled from constants + generated placeholder names; all values are bound
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["S311", "E402", "F401", "S603", "S607", "S105", "S106"]
+"services/gateway/alembic/*" = ["E402"]
+"tools/*" = ["S311", "S603", "S607"]

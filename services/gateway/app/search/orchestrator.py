@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 
 from app.cache import Cache, cache_key, get_cache
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.metrics import get_metrics
 from app.schemas import SearchRequest, SearchResponse, SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
@@ -18,7 +18,7 @@ class SearchOrchestrator:
     providers: dict[str, SearchProvider] = field(default_factory=dict)
     cache: Cache | None = None
     reranker: Reranker | None = None
-    settings = None
+    settings: Settings | None = None
 
     def __post_init__(self) -> None:
         if self.settings is None:
@@ -38,17 +38,22 @@ class SearchOrchestrator:
         start = time.monotonic()
         metrics = get_metrics()
         cache = self.cache
+        # One deep page is fetched; pagination is applied exactly once, below.
+        # offset is clamped so a client cannot force Postgres to walk an
+        # arbitrarily large OFFSET on every request.
+        offset = min(req.offset, self.settings.search_max_offset)
+        window = offset + req.num_results
         cache_key_str = cache_key(
             "search",
             req.q.lower().strip(),
             req.sources,
-            req.num_results,
-            req.offset,
+            window,
             req.language,
             req.country,
             req.time_range,
-            "-".join(req.domains or []),
-            "-".join(req.exclude_domains or []),
+            req.freshness,
+            tuple(sorted(req.domains or ())),
+            tuple(sorted(req.exclude_domains or ())),
         )
 
         if req.cache:
@@ -56,10 +61,20 @@ class SearchOrchestrator:
             if cached is not None:
                 metrics.cache_hits.inc()
                 cached["cache_hit"] = True
+                cached["query"] = req.q
+                # A cache hit must not report the latency of the original fetch.
+                cached["took_ms"] = int((time.monotonic() - start) * 1000)
                 return SearchResponse(**cached)
 
-        metrics.cache_misses.inc()
+            metrics.cache_misses.inc()
         providers = self.select_providers(req.sources)
+        if not providers:
+            from app.errors import ProviderError
+
+            raise ProviderError(
+                f"No search provider is configured for sources={req.sources!r}. "
+                "Enable the local index or set SEARXNG_URL."
+            )
         query = ProviderQuery(
             q=req.q,
             language=req.language,
@@ -67,8 +82,10 @@ class SearchOrchestrator:
             time_range=req.time_range,
             domains=req.domains,
             exclude_domains=req.exclude_domains,
-            num_results=max(req.num_results * 2, 20),
-            offset=req.offset,
+            # Candidates for the whole requested window, capped. Providers must
+            # NOT receive req.offset — the orchestrator owns pagination.
+            num_results=min(max(window, 20) * 2, self.settings.search_max_candidates),
+            offset=0,
             skip_when_local_hit=(req.sources == "all" and req.time_range == "all"),
         )
 
@@ -77,7 +94,7 @@ class SearchOrchestrator:
 
         by_provider: dict[str, list[SearchResult]] = {}
         degraded: list[str] = []
-        for provider, outcome in zip(providers, provider_results):
+        for provider, outcome in zip(providers, provider_results, strict=True):
             if isinstance(outcome, BaseException):
                 degraded.append(provider.name)
                 metrics.provider_errors.labels(provider=provider.name, kind="exception").inc()
@@ -88,33 +105,49 @@ class SearchOrchestrator:
                 metrics.upstream_latency.labels(provider=provider.name).observe(outcome.latency_ms / 1000)
             by_provider[provider.name] = outcome.results
 
-        if not by_provider or not any(by_provider.values()):
-            from app.errors import SearchNoResultsError
+        # Distinguish "index has no matches" (a valid empty 200) from "every
+        # provider failed" (an upstream outage, which must not be reported as
+        # 404 no_results).
+        if degraded and not any(by_provider.values()):
+            from app.errors import ProviderError
 
-            raise SearchNoResultsError("No search providers returned results.")
+            raise ProviderError(f"All search providers failed: {', '.join(sorted(degraded))}")
 
         fused = reciprocal_rank_fusion(by_provider)
+        # Total matches are known before the reranker truncates anything.
+        total = len(fused)
+
         # Never let the reranker cap results below what the caller asked for.
-        self.reranker.top_k = max(self.settings.rerank_top_k, req.offset + req.num_results)
+        self.reranker.top_k = max(self.settings.rerank_top_k, window)
         ranked = self.reranker.rerank(req.q, fused)
-        total = len(ranked)
 
-        results = ranked[req.offset : req.offset + req.num_results]
-
-        for i, r in enumerate(results, start=req.offset + 1):
+        # The one and only pagination slice.
+        results = ranked[offset : offset + req.num_results]
+        for i, r in enumerate(results, start=offset + 1):
             r.rank = i
+
+        # Paging past the end returned `{"total": 13, "results": []}`, which left
+        # a client unable to tell "no matches" from "you paged too far".
+        # `total` stays the true match count; `has_more` and `returned` make the
+        # page position explicit.
+        has_more = offset + len(results) < total
 
         response = SearchResponse(
             query=req.q,
             results=results,
             total=total,
+            returned=len(results),
+            has_more=has_more,
             took_ms=int((time.monotonic() - start) * 1000),
             cache_hit=False,
             degraded=degraded,
             providers=sorted(by_provider.keys()),
         )
 
-        if req.cache and not degraded:
+        # Cache even when a provider is degraded: the remaining providers' output
+        # is still useful, and refusing to cache here made a single permanently
+        # broken provider keep the cache cold for every query forever.
+        if req.cache:
             await cache.set(cache_key_str, response.model_dump(), ttl_seconds=self.settings.search_cache_ttl_seconds)
 
         try:

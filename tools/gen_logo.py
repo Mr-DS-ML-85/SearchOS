@@ -5,7 +5,6 @@ Run:  python tools/gen_logo.py  ->  docs/assets/logo.svg, docs/assets/logo-mark.
 
 from __future__ import annotations
 
-import math
 import os
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "docs", "assets")
@@ -48,12 +47,9 @@ def nodes() -> str:
         )
     for i, (x, y) in enumerate(pts):
         size = 34 if i == 2 else 26
+        parts.append(f'<circle cx="{x}" cy="{y}" r="{size}" fill="{WHITE}"/>')
         parts.append(
-            f'<circle cx="{x}" cy="{y}" r="{size}" fill="{WHITE}"/>'
-        )
-        parts.append(
-            f'<circle cx="{x}" cy="{y}" r="{size + 8}" fill="none" stroke="{WHITE}" '
-            f'stroke-width="5" opacity="0.35"/>'
+            f'<circle cx="{x}" cy="{y}" r="{size + 8}" fill="none" stroke="{WHITE}" stroke-width="5" opacity="0.35"/>'
         )
     return "\n  ".join(parts)
 
@@ -62,10 +58,14 @@ def spark() -> str:
     """Small four-point star accent, top-right."""
     x, y, r = 388, 96, 16
     pts = [
-        (x, y - r), (x + r * 0.34, y - r * 0.34),
-        (x + r, y), (x + r * 0.34, y + r * 0.34),
-        (x, y + r), (x - r * 0.34, y + r * 0.34),
-        (x - r, y), (x - r * 0.34, y - r * 0.34),
+        (x, y - r),
+        (x + r * 0.34, y - r * 0.34),
+        (x + r, y),
+        (x + r * 0.34, y + r * 0.34),
+        (x, y + r),
+        (x - r * 0.34, y + r * 0.34),
+        (x - r, y),
+        (x - r * 0.34, y - r * 0.34),
     ]
     d = "M" + " L".join(f"{px},{py}" for px, py in pts) + " Z"
     return f'<path d="{d}" fill="{SKY}" filter="url(#glow)"/>'
@@ -78,10 +78,7 @@ def magnifier() -> str:
         f'stroke-width="26" stroke-linecap="round" transform="rotate(-45 256 230)"/>'
     )
     # handle: two thick lines that look like a magnifier shaft
-    handle = (
-        f'<line x1="342" y1="316" x2="424" y2="398" stroke="{WHITE}" '
-        f'stroke-width="30" stroke-linecap="round"/>'
-    )
+    handle = f'<line x1="342" y1="316" x2="424" y2="398" stroke="{WHITE}" stroke-width="30" stroke-linecap="round"/>'
     return ring + "\n  " + handle
 
 
@@ -107,15 +104,17 @@ def icon() -> str:
 
 def wordmark(scale: int = 3) -> str:
     """Horizontal lockup: mark + 'SearchOS' text (for landing/hero)."""
-    m = icon().replace('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">',
-                       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="96" height="96">')
+    m = icon().replace(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">',
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="96" height="96">',
+    )
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" width="{640 * scale}" height="{160 * scale}" font-family="Inter, 'Segoe UI', system-ui, sans-serif">
 <defs>
   <linearGradient id="word" x1="0" y1="0" x2="1" y2="1">
     <stop offset="0" stop-color="{INDIGO}"/><stop offset="1" stop-color="{CYAN}"/>
   </linearGradient>
 </defs>
-<g transform="translate(0,0) scale(0.3)">{m.replace('id="bg"','id="bgm"').replace('id="glow"','id="glowm"')}</g>
+<g transform="translate(0,0) scale(0.3)">{m.replace('id="bg"', 'id="bgm"').replace('id="glow"', 'id="glowm"')}</g>
 <text x="150" y="105" font-size="72" font-weight="800" fill="url(#word)" letter-spacing="-2">Search</text>
 <text x="150" y="105" font-size="72" font-weight="300" fill="{INK}" letter-spacing="-2">OS</text>
 </svg>"""

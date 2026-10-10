@@ -8,72 +8,104 @@ def split_sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def estimate_tokens(text: str) -> int:
+    """Rough token count — 4 characters per token.
+
+    This is a heuristic, not a BPE count, but it is applied consistently: the
+    budget checks below measure the *assembled* chunk text, not the sum of its
+    parts. The previous code summed per-unit estimates (each truncated down)
+    while the emitted chunk paid for the inserted separators, so the guard fired
+    up to 3x too late.
+    """
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
 def chunk_text(text: str, *, max_tokens: int = 512, overlap_tokens: int = 64) -> list[str]:
     if not text:
         return []
-    sentences = split_sentences(text)
+    if max_tokens <= 0:
+        return [text]
+
     chunks: list[str] = []
     current: list[str] = []
-    current_tokens = 0
 
-    for sentence in sentences:
-        tokens = estimate_tokens(sentence)
-        if tokens > max_tokens:
-            sub_parts = _split_long(sentence, max_tokens)
-            for part in sub_parts:
-                if current and current_tokens + estimate_tokens(part) > max_tokens:
-                    chunks.append(" ".join(current))
-                    current = _tail(current, overlap_tokens)
-                    current_tokens = sum(estimate_tokens(s) for s in current)
-                current.append(part)
-                current_tokens += estimate_tokens(part)
-            continue
+    def assembled(parts: list[str]) -> str:
+        return " ".join(parts)
 
-        if current and current_tokens + tokens > max_tokens:
-            chunks.append(" ".join(current))
-            current = _tail(current, overlap_tokens)
-            current_tokens = sum(estimate_tokens(s) for s in current)
+    def flush() -> None:
+        nonlocal current
+        if current:
+            joined = assembled(current)
+            if joined.strip():
+                chunks.append(joined)
+        # Overlap: carry the tail of what we just emitted into the next chunk.
+        # Cap the carry at max_tokens so an oversized unit cannot be duplicated
+        # wholesale (the old _tail kept at least one full unit regardless of the
+        # overlap budget, which doubled chunk size).
+        carry: list[str] = []
+        budget = min(overlap_tokens, max_tokens)
+        used = 0
+        for unit in reversed(current):
+            unit_tokens = estimate_tokens(unit)
+            if used + unit_tokens > budget:
+                break
+            carry.insert(0, unit)
+            used += unit_tokens
+        current = carry
 
-        current.append(sentence)
-        current_tokens += tokens
+    for sentence in split_sentences(text):
+        for unit in _split_oversized(sentence, max_tokens):
+            if current and estimate_tokens(assembled(current + [unit])) > max_tokens:
+                flush()
+            current.append(unit)
 
     if current:
-        chunks.append(" ".join(current))
+        joined = assembled(current)
+        if joined.strip():
+            chunks.append(joined)
     return [c for c in chunks if c.strip()]
 
 
-def _split_long(sentence: str, max_tokens: int) -> list[str]:
+def _split_oversized(sentence: str, max_tokens: int) -> list[str]:
+    """Break a unit into pieces that each fit within ``max_tokens``.
+
+    Handles three cases the old implementation did not:
+    - a single word longer than max_tokens (long URLs, base64 blobs)
+    - text with no whitespace at all (CJK, minified content) — previously
+      produced one giant chunk that silently overflowed the embedding model's
+      context window
+    - multi-word sentences, split on word boundaries
+    """
+    if estimate_tokens(sentence) <= max_tokens:
+        return [sentence]
+
     words = sentence.split()
+    if len(words) <= 1:
+        return _split_by_chars(sentence, max_tokens)
+
     parts: list[str] = []
     current: list[str] = []
-    current_tokens = 0
     for word in words:
-        tokens = estimate_tokens(word)
-        if current and current_tokens + tokens > max_tokens:
+        if estimate_tokens(word) > max_tokens:
+            if current:
+                parts.append(" ".join(current))
+                current = []
+            parts.extend(_split_by_chars(word, max_tokens))
+            continue
+        if current and estimate_tokens(" ".join(current + [word])) > max_tokens:
             parts.append(" ".join(current))
             current = []
-            current_tokens = 0
         current.append(word)
-        current_tokens += tokens
     if current:
         parts.append(" ".join(current))
     return parts
 
 
-def _tail(sentences: list[str], overlap_tokens: int) -> list[str]:
-    if not sentences:
-        return []
-    result: list[str] = []
-    tokens = 0
-    for s in reversed(sentences):
-        if tokens >= overlap_tokens:
-            break
-        result.insert(0, s)
-        tokens += estimate_tokens(s)
-    return result
-
-
-def estimate_tokens(text: str) -> int:
-    if not text:
-        return 0
-    return max(1, int(len(text) / 4))
+def _split_by_chars(text: str, max_tokens: int) -> list[str]:
+    """Hard character-level split; the last resort for unsplittable input."""
+    step = max(1, max_tokens * 4)
+    if len(text) <= step:
+        return [text]
+    return [text[i : i + step] for i in range(0, len(text), step)]

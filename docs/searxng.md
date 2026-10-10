@@ -38,7 +38,7 @@ re-query "milvus cognee"  →  3 results, all src=local, no network hit
 
 ## Dedup across providers
 
-`services/gateway/app/search/fusion.py` merges provider results by **normalized URL** (scheme/host/port/path, trailing slash, fragment, `www.`):
+`services/gateway/app/search/fusion.py` merges provider results by **normalized URL** (lowercased host with any `www.` prefix and default port removed, path without a trailing slash; query string and fragment dropped):
 
 - duplicate URLs → single entry
 - an **indexed** (local/vector) copy is preferred over the live web snippet

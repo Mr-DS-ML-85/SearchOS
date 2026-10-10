@@ -4,7 +4,7 @@ import json
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy import text
@@ -37,7 +37,7 @@ class SearXNGProvider(SearchProvider):
         if query.skip_when_local_hit:
             try:
                 local = await self._local_hits(query.q, limit=max(query.num_results, 10))
-                if len(local) >= self._skip_threshold(query.num_results) and self._is_fresh(local):
+                if len(local) >= self._skip_threshold() and self._is_fresh(local):
                     result.raw = {"served_from_local": True, "local_hits": len(local)}
                     result.latency_ms = (time.monotonic() - start) * 1000
                     return result
@@ -131,13 +131,18 @@ class SearXNGProvider(SearchProvider):
             ON CONFLICT (normalized_url) DO UPDATE SET
                 title = EXCLUDED.title,
                 content_text = EXCLUDED.content_text,
-                fetched_at = now()
+                fetched_at = now(),
+                meta = EXCLUDED.meta
+            WHERE documents.meta->>'searxng_snippet' = 'true'
             """
         )
         async with self.session_factory() as session:
-            await session.execute(sql, rows)
+            result = await session.execute(sql, rows)
             await session.commit()
-        get_metrics().documents_indexed.inc(len(rows))
+        # Only count rows that were actually inserted, not conflict-skipped ones.
+        inserted = result.rowcount if result.rowcount and result.rowcount >= 0 else 0
+        if inserted:
+            get_metrics().documents_indexed.inc(inserted)
 
     async def _local_hits(self, q: str, limit: int) -> list:
         from app.search.local_index import LocalIndexProvider
@@ -146,21 +151,26 @@ class SearXNGProvider(SearchProvider):
             ProviderQuery(q=q, num_results=limit), or_fallback=False
         )
 
-    @staticmethod
-    def _skip_threshold(num_results: int) -> int:
-        return get_settings().searxng_local_min_hits
+    def _skip_threshold(self) -> int:
+        return self.settings.searxng_local_min_hits
 
     def _is_fresh(self, local: list) -> bool:
+        """True when a *majority* of local hits are within the TTL.
+
+        The previous "any single fresh row" check let one fresh document
+        suppress SearXNG even when every top result was stale.
+        """
+        if not local:
+            return False
         ttl = self.settings.searxng_local_ttl_seconds
         now = time.time()
+        fresh = 0
         for row in local:
             fetched_at = row.get("fetched_at")
-            if fetched_at is None:
-                return True
             if isinstance(fetched_at, datetime):
                 if now - fetched_at.timestamp() < ttl:
-                    return True
-        return False
+                    fresh += 1
+        return fresh * 2 > len(local)
 
     @staticmethod
     def _parse_dt(value: object) -> datetime | None:
@@ -169,7 +179,7 @@ class SearXNGProvider(SearchProvider):
         try:
             parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
             if parsed.tzinfo is not None:
-                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                parsed = parsed.astimezone(UTC).replace(tzinfo=None)
             return parsed
         except ValueError:
             return None

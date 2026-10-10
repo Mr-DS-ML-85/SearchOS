@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
 from app.errors import RateLimitError
 from app.models import ApiKey, ApiKeyRole
 from app.security import SecurityService, hash_api_key

@@ -12,10 +12,14 @@ All endpoints accept `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 | `language` | string | — | e.g. `en`, `de` |
 | `country` | string | — | e.g. `us` |
 | `time_range` | `day` \| `week` \| `month` \| `year` \| `all` | `all` | freshness filter |
-| `domains` | comma list | — | restrict to domains |
-| `exclude_domains` | comma list | — | exclude domains |
-| `offset` | int | 0 | pagination offset |
+| `domains` | repeated or comma list | — | restrict to these domains |
+| `exclude_domains` | repeated or comma list | — | exclude these domains |
+| `offset` | int 0–1000 | 0 | pagination offset |
 | `cache` | bool | `true` | Redis result cache |
+
+Both list parameters accept `?domains=a.com&domains=b.com` and
+`?domains=a.com,b.com` interchangeably. They are matched as substrings of the
+stored URL with `LIKE` metacharacters escaped, so `domains=%` matches nothing.
 
 Example:
 
@@ -47,7 +51,22 @@ curl -s "http://localhost:8000/v1/search?q=hnsw+gpu&num_results=5&sources=all" \
 }
 ```
 
+`total` is the number of **fused matches**, computed before the reranker
+truncates the list — not the number of results in this page. Use it to decide
+whether to request another page.
+
 Behavioral notes:
+
+- Pagination is applied once. `offset` selects the page; there are no gaps
+  between pages and an offset past the end returns `200` with an empty `results`
+  array, not a 404.
+- `time_range` filters the local and vector providers by publish time (falling
+  back to fetch time) as well as SearXNG.
+- `freshness` is accepted for compatibility but currently has no effect.
+- A query with no matches returns `200` with an empty `results` array. A `404`
+  `no_results` is reserved for a genuinely unknown resource, and a `502`
+  `provider_error` means every configured provider failed.
+
 
 - `sources=web` forces a live SearXNG query (bypasses the local-skip heuristic).
 - `cache=false` bypasses the Redis cache — use when testing the live pipeline.
@@ -109,10 +128,21 @@ curl -s -X POST http://localhost:8000/v1/admin/keys \
 
 ## Errors
 
-- `401` — missing/invalid key.
+Every error response uses one envelope:
+
+```json
+{"code": "...", "message": "...", "details": null}
+```
+
+- `401` — missing/invalid key (includes a `WWW-Authenticate` header).
 - `403` — insufficient role.
-- `429` — rate limited (`Retry-After` header).
-- `4xx/5xx` — JSON `{"code": "...", "message": "...", "details": null}`.
+- `413` — request body over `MAX_REQUEST_BODY_BYTES`.
+- `422` — validation failure, including URLs refused by the egress policy.
+- `429` — rate limited, with a `Retry-After` header.
+- `502` — all search providers failed.
+- `503` — database unavailable.
+- `500` — unhandled error; the body carries a `request_id` that also appears in
+  the `X-Request-Id` header and the gateway logs.
 
 ## MCP
 

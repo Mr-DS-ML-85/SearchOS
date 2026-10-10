@@ -7,8 +7,38 @@ from sqlalchemy import text
 from app.config import get_settings
 from app.embed.provider import get_embedding_provider
 from app.metrics import get_metrics
-from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.schemas import SearchResult
+from app.search.base import ProviderQuery, ProviderResult, SearchProvider
+
+# One row per *document*, using the best-matching chunk.
+#
+# The previous query returned one row per chunk, so a 30-chunk page occupied 30
+# of the LIMIT slots and RRF added 1/(k+rank) once per chunk — making document
+# length a relevance multiplier that could outrank genuinely multi-provider
+# matches. DISTINCT ON (d.id) keeps the nearest chunk per document.
+SQL = text(
+    """
+    SELECT DISTINCT ON (d.id)
+        d.url,
+        d.title,
+        d.content_text,
+        d.published_at,
+        d.source,
+        c.content AS chunk_content,
+        1 - (c.embedding <=> CAST(:vec AS vector)) AS similarity
+    FROM chunks c
+    JOIN documents d ON d.id = c.document_id
+    WHERE c.embedding IS NOT NULL
+      AND d.status = 'indexed'
+      AND 1 - (c.embedding <=> CAST(:vec AS vector)) >= :min_similarity
+    ORDER BY d.id, c.embedding <=> CAST(:vec AS vector)
+    LIMIT :limit
+    """
+)
+
+# Candidate retrieval scans more chunks than the number of documents we want, so
+# a single long document cannot crowd out the rest of the result set.
+CHUNK_OVERSAMPLE = 4
 
 
 class VectorIndexProvider(SearchProvider):
@@ -34,22 +64,14 @@ class VectorIndexProvider(SearchProvider):
             result.latency_ms = (time.monotonic() - start) * 1000
             return result
 
-        sql = text(
-            """
-            SELECT
-                d.url, d.title, d.content_text, d.published_at, d.source,
-                1 - (c.embedding <=> CAST(:vec AS vector)) AS similarity
-            FROM chunks c
-            JOIN documents d ON d.id = c.document_id
-            WHERE c.embedding IS NOT NULL AND d.status = 'indexed'
-            ORDER BY c.embedding <=> CAST(:vec AS vector)
-            LIMIT :limit
-            """
-        )
-        params = {"vec": str(vector), "limit": query.num_results}
+        params = {
+            "vec": str(vector),
+            "limit": query.num_results,
+            "min_similarity": self.settings.vector_min_similarity,
+        }
         try:
             async with self.session_factory() as session:
-                rows = (await session.execute(sql, params)).mappings().all()
+                rows = (await session.execute(SQL, params)).mappings().all()
         except Exception as e:
             get_metrics().provider_errors.labels(provider=self.name, kind="query").inc()
             result.error = f"vector query failed: {e.__class__.__name__}: {e}"
@@ -57,19 +79,35 @@ class VectorIndexProvider(SearchProvider):
             return result
 
         for rank, row in enumerate(rows, start=1):
-            content = row["content_text"] or ""
+            document = row["content_text"] or ""
+            chunk = row["chunk_content"] or ""
+            # Prefer the matched chunk; fall back to the head of the document.
+            snippet = chunk[:300] if chunk else (document[:300] if document else "")
             result.results.append(
                 SearchResult(
                     title=row["title"] or row["url"],
                     url=row["url"],
-                    snippet=content[:300] if content else "",
+                    snippet=snippet,
                     source=self.name,
                     score=float(row["similarity"] or 0.0) * self.settings.local_index_vector_weight,
                     rank=rank,
                     published=row["published_at"].isoformat() if row["published_at"] else None,
-                    domain=row["source"],
+                    domain=_domain(row["url"]),
                 )
             )
 
         result.latency_ms = (time.monotonic() - start) * 1000
+        get_metrics().search_duration.labels(provider=self.name).observe(result.latency_ms / 1000)
         return result
+
+
+def _domain(url: str) -> str:
+    """Hostname for a URL.
+
+    Previously this returned ``documents.source`` (the ingest channel:
+    "crawler"/"ingest"/"web"), which is not a hostname and made the reranker's
+    domain weights impossible to wire up.
+    """
+    from app.search.providers.searxng import SearXNGProvider
+
+    return SearXNGProvider._domain(url)

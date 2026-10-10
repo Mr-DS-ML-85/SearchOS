@@ -30,14 +30,25 @@ docker compose up -d --build
 
 This starts:
 
-| Service | Port | Notes |
+| Service | Host port | Notes |
 |---|---|---|
-| gateway | 8000 | FastAPI API (migrations auto-run) |
-| worker | — | ingest + crawler + snippet enrichment |
-| postgres | 5432 | pgvector, FTS index, jobs |
-| redis | 6379 | cache, rate limits, queues |
-| renderer | 8040 | optional headless Chromium for JS pages |
-| grafana / prometheus | 3000 / 9090 | metrics |
+| gateway | 8000 | FastAPI API (runs migrations) — bound to 127.0.0.1 |
+| worker | — | ingest + crawler + snippet enrichment; metrics on 9101 (internal) |
+| postgres | 5432 | pgvector, FTS index, jobs — bound to 127.0.0.1 |
+| redis | 16379 | cache, rate limits, queues — bound to 127.0.0.1 |
+| renderer | — | optional headless Chromium for JS pages; **not** published |
+| grafana / prometheus | 3000 / 9090 | bound to 127.0.0.1 |
+
+The renderer is deliberately not published to the host. `/render` accepts an
+arbitrary URL, so publishing it would expose an open SSRF proxy into the
+compose network. The gateway reaches it internally as `http://renderer:8010` and
+authenticates with the shared `RENDERER_TOKEN`.
+
+The default compose file now **requires** these to be set in `.env`:
+`POSTGRES_PASSWORD`, `RENDERER_TOKEN`, `BOOTSTRAP_ADMIN_API_KEY`,
+`GRAFANA_ADMIN_PASSWORD`, `SEARXNG_SECRET`. `BOOTSTRAP_ADMIN_API_KEY` must be at
+least 16 characters and must not still start with `change-me` — the gateway
+refuses to start otherwise rather than coming up silently locked out.
 
 ### Optional: SearXNG live-web fallback
 

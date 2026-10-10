@@ -93,8 +93,37 @@ SDK 2.0's `Server` runs a dual-era loop, so one instance serves both handshake-e
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SEARCHOS_API_URL` | `http://localhost:8000` | gateway base URL |
+| `SEARCHOS_URL` | `http://127.0.0.1:8000` | gateway base URL |
 | `SEARCHOS_API_KEY` | — | user key for `search`/`extract`/`stats`/`health` |
 | `SEARCHOS_ADMIN_KEY` | — | admin key; only needed for `ingest` tool |
+| `MCP_HOST` | `127.0.0.1` | bind address for the HTTP transports |
+| `MCP_PORT` | `8099` | port for the HTTP transports |
+| `MCP_HTTP_TOKEN` | — | bearer token required by `/mcp`, `/sse`, `/messages/` |
+| `MCP_STATELESS_HTTP` | `true` | run Streamable HTTP without sessions |
+| `GATEWAY_TIMEOUT` | `60` | seconds before a gateway call is abandoned |
 
 The `ingest` tool returns an explicit error if no admin key is set.
+
+### Authentication on the HTTP transports
+
+`/mcp`, `/sse` and `/messages/` expose the full tool set, including `ingest`,
+which enqueues arbitrary-URL crawls. They require `Authorization: Bearer
+$MCP_HTTP_TOKEN` when it is set.
+
+Binding to a non-loopback `MCP_HOST` **without** `MCP_HTTP_TOKEN` is refused at
+startup. To enable remote agents, set both:
+
+```bash
+export MCP_HOST=0.0.0.0
+export MCP_HTTP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+```
+
+stdio transport is unaffected — it is a local process, not a socket.
+
+### Naming note
+
+The gateway base URL variable is `SEARCHOS_URL`. An earlier revision of this
+document called it `SEARCHOS_API_URL`, which the server never read, so a
+following setup silently pointed the MCP server at the wrong address.
+
+See also: [API reference](api.md) · [deployment](deployment.md)

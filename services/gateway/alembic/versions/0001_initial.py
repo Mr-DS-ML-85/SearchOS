@@ -5,7 +5,8 @@ Revises:
 Create Date: 2026-01-01
 
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
 
 import pgvector.sqlalchemy
 import sqlalchemy as sa
@@ -13,9 +14,9 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -107,12 +108,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS ix_documents_fts")
     op.drop_table("usage_logs")
     op.drop_table("ingest_jobs")
     op.drop_table("chunks")
     op.drop_table("documents")
     op.drop_table("api_keys")
-    op.execute("DROP TABLE IF EXISTS ingest_kind")
-    op.execute("DROP TABLE IF EXISTS ingest_job_status")
-    op.execute("DROP TABLE IF EXISTS apikey_role")
+    # These are ENUM types, not tables. The previous "DROP TABLE IF EXISTS"
+    # statements were silent no-ops, so the types survived and any subsequent
+    # upgrade() failed with `type "ingest_kind" already exists` — making the
+    # migration chain practically irreversible.
+    op.execute("DROP TYPE IF EXISTS ingest_kind")
+    op.execute("DROP TYPE IF EXISTS ingest_job_status")
+    op.execute("DROP TYPE IF EXISTS apikey_role")
