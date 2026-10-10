@@ -4,7 +4,7 @@ SearchOS is a set of cooperating services that together replace a third-party se
 
 ```
 ┌─────────────────────────────── SearchOS Gateway (FastAPI) ───────────────────────────────┐
-│  /v1/search   →  query router  →  local FTS + vector  +  SearXNG fallback  →  RRF  rank  │
+│  /v1/search   →  router  →  local FTS + vector + web cascade  →  RRF  →  cross-encoder  │
 │  /v1/extract  →  robots.txt check  →  render/fetch  →  trafilatura/pypdf  →  clean text   │
 │  /v1/admin/ingest · /v1/admin/keys · /health · /metrics · /stats                           │
 └───────────────┬───────────────────────────────┬──────────────────────────────────────────┘
@@ -19,7 +19,7 @@ SearchOS is a set of cooperating services that together replace a third-party se
                                    (follow links) (stale pages)
                                              │
                                     ┌────────▼────────┐
-                                    │  SearXNG (web)  │──▶ results saved into index
+                                    │ web cascade     │──▶ results saved into index
                                     └─────────────────┘
 ```
 
@@ -33,7 +33,7 @@ Consumes `ingest_jobs` from Postgres (SKIP-LOCKED polling). Three concurrent loo
 
 1. **ingest** — fetch → robots check → extract → chunk → embed → index, then discover nested links (recursive crawl).
 2. **recrawler** — every `CRAWLER_CONTINUOUS_INTERVAL_SECONDS`, re-enqueue `indexed` documents older than `CRAWLER_RECRAWL_AFTER_SECONDS` (oldest first).
-3. **snippet** — enrich the top-5 result URLs of each search with full-page content.
+3. **snippet** — enrich the top `SEARCH_ENRICH_TOP_N` result URLs (default 15) of each search with full-page content.
 
 ### renderer (`services/renderer`)
 Optional Playwright/headless-Chromium service for SPA / heavy-JS pages. Falls back to plain HTTP fetch when down.
@@ -44,8 +44,10 @@ Optional Playwright/headless-Chromium service for SPA / heavy-JS pages. Falls ba
 ### redis
 Search/extract result cache (DB 1), rate-limit counters (DB 2), snippet queue.
 
-### SearXNG (optional, profile `web`)
-Live web fallback. Every result it returns is **persisted into `documents`** (`source='web'`) and re-crawled, so the index learns.
+### Web providers (SearXNG optional, profile `web`)
+Live web fallback as a **cascade**: SearXNG → Tavily → Exa → Jina. The first tier that returns results wins; a tier answering with zero results counts as a miss and the next is tried, since an empty SERP usually means rate limiting. When every tier fails the cascade opens a cooldown so a request does not pay each dead upstream's timeout.
+
+Tavily works with no account via `X-Tavily-Access-Mode: keyless`. Exa is reached through its hosted MCP server (`mcp.exa.ai`) because its REST API returns 402 without a funded key. Jina requires a key. Every result is **persisted into `documents`** (`source='web'`) and re-crawled, so the index learns regardless of which tier served it.
 
 ## Search pipeline
 
@@ -53,15 +55,20 @@ Live web fallback. Every result it returns is **persisted into `documents`** (`s
 2. Router fans out to providers in parallel:
    - `local` — FTS with `ts_rank_cd`, AND-then-OR fallback query builder.
    - `vector` — pgvector cosine similarity (when an embedding model is configured).
-   - `web` — SearXNG, **skipped** when local strict matches ≥ `SEARXNG_LOCAL_MIN_HITS` and fresh (`SEARXNG_LOCAL_TTL_SECONDS`).
+   - `web` — the cascade, **skipped** when local strict matches ≥ `SEARXNG_LOCAL_MIN_HITS` and fresh (`SEARXNG_LOCAL_TTL_SECONDS`).
+   - `searxng` / `tavily` / `exa` / `jina` — pin one tier; errors instead of falling back.
 3. Reciprocal Rank Fusion merges ranked lists; **dedupes by normalized URL**, preferring indexed copies (local/vector) over live web snippets.
-4. Reranker boosts title/phrase matches, known-good domains, freshness.
-5. Web results are persisted; top-5 URLs enqueued for snippet enrichment.
-6. Response: `providers`, `degraded`, timing, `cache_hit`.
+4. A **cross-encoder** (`RERANK_MODEL`) rescores the top `RERANK_CANDIDATE_POOL` candidates. RRF yields a rank position, not a relevance measure — without this step good and nonsense queries returned near-identical scores. Title/freshness/domain boosts remain as the fallback when no cross-encoder is installed.
+5. Results below `RERANK_MIN_SCORE` are dropped; a best score under `RERANK_LOW_CONFIDENCE_SCORE` sets `low_confidence`.
+6. Web results are persisted; top `SEARCH_ENRICH_TOP_N` URLs enqueued for snippet enrichment.
+7. Response: `providers`, `degraded`, `top_score`, `low_confidence`, timing, `cache_hit`.
 
 ## Failure behavior
 
 - Providers degrade individually (listed in `degraded`) instead of failing the request.
+- The web cascade degrades per tier: a dead SearXNG is transparent because the next tier answers.
+- Missing embeddings degrade loudly: `/stats` reports `vector_search_available` and
+  `embedding_coverage`, and the worker logs why. A `backfill` loop fills gaps in the background.
 - Network calls have timeouts; cache/DB wrapped with graceful fallbacks.
 - `/health/ready` gates traffic on Postgres, Redis, and renderer health.
 

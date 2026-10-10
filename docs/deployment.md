@@ -12,17 +12,38 @@ docker compose ps
 
 ### Embeddings (optional, ~3 GB)
 
-The worker container embeds chunks via `sentence-transformers` (model: `BAAI/bge-small-en-v1.5`, 384-dim) using pgvector for cosine-similarity search. This is **opt-in** to keep the base image small:
+Embeddings use `sentence-transformers` (model: `BAAI/bge-small-en-v1.5`, 384-dim) with
+pgvector cosine search. They are **opt-in per image** to keep the base small:
 
 ```bash
-# Enable (builds with sentence-transformers + torch, downloads model on first run)
-INSTALL_EMBEDDINGS=1 docker compose build worker && docker compose up -d worker
+# Enable — default. Builds torch into both images.
+docker compose build && docker compose up -d
 
-# Disable (FTS-only mode — worker indexes Postgres FTS, no vector search)
-INSTALL_EMBEDDINGS=0 docker compose build worker && docker compose up -d worker
+# Disable — keyword-only (adds ~3 GB back to each image)
+INSTALL_EMBEDDINGS=0 docker compose build && docker compose up -d
 ```
 
-Default in `docker-compose.yml` is `1`. Without it, `searchos_stats` shows `embedding_coverage: 0.0` and `vector_search_available: false`.
+**Both the gateway and the worker need it.** The worker embeds documents; the gateway
+embeds the *query*. Passing the arg to only the worker lets the corpus gain vectors with
+no way to compare a query against them — search silently stays lexical, `documents` keep
+`status='indexed'`, and `vector_search_available` stays `false` with nothing in the
+response to explain why.
+
+Verify rather than assume:
+
+```bash
+curl -s localhost:8000/stats | grep -E 'vector_search_available|embedding_coverage|chunks_without_embedding'
+```
+
+`vector_search_available: false` with `chunks_without_embedding: 0` means the gateway
+image is stale — rebuild it, not just the worker.
+
+On an existing corpus, enabling this does not retroactively embed what is already
+indexed. The worker's `backfill` loop drains the gap in the background:
+
+```bash
+docker compose logs -f worker | grep backfill
+```
 
 Tear down without losing data: `docker compose down` (keep volumes). Full reset: `docker compose down -v`.
 

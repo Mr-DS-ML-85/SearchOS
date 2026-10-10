@@ -53,11 +53,14 @@ SearchOS builds a production-grade, fully self-hosted search API from open-sourc
 ## Features
 
 - **Own search index** — Postgres FTS (`ts_rank_cd`, english config) + pgvector HNSW embeddings, fused with Reciprocal Rank Fusion.
+- **Cross-encoder reranking** — candidates are rescored by a real relevance model (`cross-encoder/ms-marco-MiniLM-L6-v2`), so good and bad matches no longer return near-identical scores. Results below a threshold are dropped and weak result sets are flagged `low_confidence`.
+- **Web fallback cascade** — SearXNG is primary; when it fails, is rate-limited, or returns an empty SERP, the request falls through to **Tavily** (free, no account needed), **Exa** (via its hosted MCP server), then **Jina**. The first tier that answers wins, and an exhausted chain opens a cooldown so a request never pays every dead upstream's timeout.
 - **Live web fallback that learns** — when local coverage is thin, SearXNG results are merged in, **saved into your index, and re-crawled**, so repeat queries are served instantly without re-hitting the web.
 - **Continuous recursive crawler** — follows nested same-domain links (depth-limited), plus automatic **re-crawl of stale pages** so your index stays fresh.
-- **LLM-ready extraction** — clean markdown/text from HTML, PDF, and JS-rendered pages (headless renderer), robots.txt-aware.
-- **MCP server** — expose search, extract, ingest, stats and health to any AI agent over **stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP** (2026-07-28 spec).
-- **Production ops** — Redis cache + rate limits, auth (hashed API keys), Prometheus/Grafana metrics, Alembic migrations.
+- **Embedding backfill** — enabling embeddings on an existing corpus drains missing vectors in the background, so documents indexed while the embedder was unavailable are not stranded without semantic search.
+- **LLM-ready extraction** — clean markdown/text/json from HTML, PDF, and JS-rendered pages (headless renderer), robots.txt-aware, with an SSRF guard that resolves each host before connecting.
+- **MCP server** — expose search, extract, ingest, stats and health to any AI agent over **stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP** (2026-07-28 spec). The HTTP transport is bearer-token protected; stdio is a local process.
+- **Production ops** — Redis cache + rate limits, auth (hashed API keys), Prometheus/Grafana metrics, Alembic migrations, and network segmentation so data services have no route off the host.
 
 ## Quick start
 
@@ -137,7 +140,27 @@ SEARCHOS_API_KEY=sk_... python searchos_mcp.py --transport stdio
 SEARCHOS_API_KEY=sk_... python searchos_mcp.py --port 8099
 ```
 
-Point your agent at `http://localhost:8099/mcp` (modern clients) or `/sse` (legacy clients). Tools: `search`, `extract`, `ingest`, `stats`, `health`. See [docs/mcp.md](docs/mcp.md).
+Or run it as a container alongside the stack:
+
+```bash
+echo "MCP_HTTP_TOKEN=$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')" >> .env
+docker compose --profile mcp up -d
+curl -s localhost:8099/healthz   # {"status":"ok","service":"searchos-mcp"}
+```
+
+`/mcp`, `/sse` and `/messages/` expose the full tool set including `ingest`, so the HTTP transports require `MCP_HTTP_TOKEN`. The server refuses to bind a non-loopback address without one. stdio is unaffected — it is a local process, not a socket.
+
+Tools: `search`, `extract`, `ingest`, `stats`, `health`.
+
+**Claude Code** speaks Streamable HTTP natively:
+
+```bash
+claude mcp add --scope user --transport http searchos \
+  http://127.0.0.1:8099/mcp --header "Authorization: Bearer $MCP_HTTP_TOKEN"
+claude mcp list    # shows "✔ Connected"
+```
+
+**Claude Desktop** accepts only the stdio shape and **deletes** entries it cannot parse, so back up its config before editing. It cannot launch `npx` (GUI apps get a minimal `PATH`, and npx's `#!/usr/bin/env node` shebang fails). Reaching `/mcp` from Desktop means bridging with a globally installed `mcp-remote` invoked through an absolute `node` path — both are spelled out, along with the failure modes, in [docs/mcp.md](docs/mcp.md).
 
 ## Architecture
 
@@ -164,19 +187,58 @@ Point your agent at `http://localhost:8099/mcp` (modern clients) or `/sse` (lega
 
 ### Search pipeline
 
-1. `GET /v1/search?q=...` arrives. Redis cache lookup (5 min TTL).
-2. Query router fans out in parallel to `local` (FTS), `vector` (pgvector cosine), and `web` (SearXNG).
+1. `GET /v1/search?q=...` arrives. Redis cache lookup — 5 min TTL, or 30s for an empty/low-confidence response so a transient miss does not pin itself.
+2. Query router fans out in parallel to `local` (FTS), `vector` (pgvector cosine), and `web` (the fallback cascade).
 3. **SearXNG is skipped** when the local index has ≥ `SEARXNG_LOCAL_MIN_HITS` (default 3) fresh strict matches — otherwise live results are fetched.
 4. Reciprocal Rank Fusion merges + **dedupes by normalized URL** (indexed copies preferred over web snippets).
-5. Reranker boosts title/phrase matches, known-good domains, freshness.
-6. Web results are persisted to the index, and the top-5 URLs are enqueued for snippet enrichment / full-page crawl.
-7. Response includes `providers`, `degraded`, and timing.
+5. **A cross-encoder rescores the fused candidates.** The previous reranker only multiplied the fused score by title/freshness boosts, so every candidate kept the same magnitude and nothing separated a good match from noise. Scores are now relevance logits — see *Reranking* below.
+6. Results below `RERANK_MIN_SCORE` are dropped. If the best survivor is under `RERANK_LOW_CONFIDENCE_SCORE`, the response is flagged `low_confidence` so a caller can distinguish "the index does not cover this" from "here is the best of a weak set".
+7. Web results are persisted to the index, and the top `SEARCH_ENRICH_TOP_N` URLs (default 15) are enqueued for snippet enrichment / full-page crawl.
+8. Response includes `providers`, `degraded`, `top_score`, `low_confidence`, and timing.
+
+> **Note on caching.** The search/extract result cache is an **in-process**
+> singleton, not Redis. It is invalidated after every successful ingest, but it
+> cannot be flushed centrally and is per uvicorn worker, so two workers may serve
+> different results for the same query. Redis backs rate-limit counters and the
+> snippet queue.
+
+### Reranking and relevance thresholds
+
+The fused reciprocal-rank score is a rank position, not a relevance measure. Left alone, a nonsense query and a precise one returned rows scored ~0.016 and ~0.017 — visually identical.
+
+`cross-encoder/ms-marco-MiniLM-L6-v2` reads the query and document together and emits a relevance score. Measured on this codebase's corpus:
+
+| Query class | Score range |
+|---|---|
+| relevant (`CAGRA GPU graph index`, `PostgreSQL autovacuum tuning`) | 4.94 – 9.34 |
+| nonsense (`zxqvbnm flurgle obsidian kettle`) | ≤ 1.16 |
+
+**Scores are unbounded logits, not probabilities.** A sigmoid was tried and rejected: it collapses that gap to 0.995–1.0 versus 0.76, far too narrow to cut on. `RERANK_MIN_SCORE` (3.0) and `RERANK_LOW_CONFIDENCE_SCORE` (4.5) sit in the measured gap and must be retuned if `RERANK_MODEL` changes.
+
+If the cross-encoder cannot load, the heuristic reranker is used instead and **the thresholds are skipped** — heuristic scores cannot support one. Embedding and rerank models are loaded during gateway startup, so the first query does not pay for a cold load.
+
+### Web fallback cascade
+
+`sources=web` is a cascade, not SearXNG alone:
+
+| Tier | Credential needed | Notes |
+|---|---|---|
+| SearXNG | — | primary |
+| Tavily | **none** | `X-Tavily-Access-Mode: keyless`, identical response schema |
+| Exa | **none** | hosted MCP at `mcp.exa.ai`; its REST API returns 402 without a funded key |
+| Jina | key | `s.jina.ai` returns 401 without one |
+
+A tier that answers with **zero results** does not stop the chain — it counts as a miss, because an empty SERP usually means an upstream rate limit rather than genuine absence of results. When every tier fails the chain opens a cooldown and returns immediately; one success clears it.
+
+Each tier is also addressable on its own (`sources=searxng|tavily|exa|jina`), which errors rather than silently falling back, so an empty result means that upstream genuinely had nothing. See [docs/searxng.md](docs/searxng.md).
 
 ### Failure behavior
 
 - A failing provider degrades the response (marked in `degraded`) instead of failing the request.
+- **The web cascade degrades per tier.** A dead SearXNG is transparent: the next tier answers, and `degraded` names what failed.
 - All network calls have timeouts; cache and DB are wrapped with graceful fallbacks. If the renderer is down, extraction falls back to plain HTTP fetch.
 - `/health/ready` checks Postgres, Redis, and the renderer so orchestrators only route to healthy nodes.
+- **Embeddings degrade loudly, not silently.** If the provider is unavailable, documents are still written with `status='indexed'` and no vectors, `/stats` reports `vector_search_available: false` and `embedding_coverage: 0.0`, and the worker logs why. Search falls back to keyword-only rather than failing.
 
 ## API reference
 
@@ -187,37 +249,52 @@ Full reference in [docs/api.md](docs/api.md).
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | — | search query (required) |
-| `sources` | `all`\|`local`\|`vector`\|`web` | `all` | which providers to query |
+| `sources` | `all`\|`local`\|`vector`\|`web`\|`searxng`\|`tavily`\|`exa`\|`jina` | `all` | which providers to query; `web` is the whole cascade |
 | `num_results` | int 1–50 | 10 | results to return |
 | `language` | string | — | e.g. `en`, `de` |
 | `country` | string | — | e.g. `us` |
 | `time_range` | `day`\|`week`\|`month`\|`year`\|`all` | `all` | freshness filter |
 | `domains` / `exclude_domains` | list[string] | — | domain restrictions |
 | `offset` | int | 0 | pagination offset |
-| `cache` | bool | `true` | enable Redis result cache |
+| `cache` | bool | `true` | enable the result cache (see note) |
 
 ```json
 {
-  "query": "how do search engines work",
+  "query": "PostgreSQL autovacuum tuning",
   "results": [
     {
-      "title": "Web search engine - Wikipedia",
-      "url": "https://en.wikipedia.org/wiki/Web_search_engine",
-      "snippet": "A web search engine or Internet search engine is a software system...",
-      "source": "local",
-      "score": 0.0164,
+      "title": "PostgreSQL Autovacuum Tuning: 10 Key Parameters",
+      "url": "https://example.com/postgres-autovacuum",
+      "snippet": "Autovacuum is the single most common source of bloat...",
+      "source": "web",
+      "score": 9.34,
       "rank": 1,
       "published": null,
-      "domain": "en.wikipedia.org"
+      "domain": "example.com"
     }
   ],
-  "total": 10,
-  "took_ms": 312,
+  "total": 15,
+  "returned": 10,
+  "has_more": true,
+  "offset": 0,
+  "took_ms": 190,
   "cache_hit": false,
   "degraded": [],
-  "providers": ["local", "vector", "web"]
+  "providers": ["local", "vector", "web"],
+  "top_score": 9.34,
+  "low_confidence": false,
+  "min_score": 3.0
 }
 ```
+
+| Field | Meaning |
+|---|---|
+| `total` | matches surviving the threshold, before pagination |
+| `returned` / `has_more` / `offset` | disambiguates "no matches" from "you paged past the end" |
+| `top_score` | best relevance score in this page; `null` when nothing cleared the threshold |
+| `low_confidence` | `true` when no result cleared `RERANK_LOW_CONFIDENCE_SCORE` — treat as a weak match, not an answer |
+| `min_score` | the cutoff actually applied, so it is never a mystery why a result is missing |
+| `degraded` | providers or cascade tiers that errored |
 
 ### `POST /v1/extract`
 
@@ -252,22 +329,50 @@ Everything is environment-driven (`.env`). Key variables:
 | `DATABASE_URL` | `postgresql+asyncpg://...@postgres:5432/searchos` | async Postgres |
 | `REDIS_URL` | `redis://redis:6379/0` | Redis (cache DB 1, rate-limit DB 2) |
 | `RENDERER_URL` | `http://renderer:8010` | headless Chromium for SPA/heavy-JS pages |
-| `SEARXNG_URL` | — | live web fallback (optional) |
+| `SEARXNG_URL` | — | live web fallback (optional; primary tier of the cascade) |
 | `SEARXNG_LOCAL_MIN_HITS` | `3` | skip SearXNG when local strict matches ≥ this |
 | `SEARXNG_LOCAL_TTL_SECONDS` | `3600` | local hits fresher than this skip the web |
+| `TAVILY_API_KEY` / `TAVILY_KEYLESS` | — / `true` | cascade tier 2. Keyless needs no account; a key takes precedence |
+| `EXA_API_KEY` / `EXA_MCP_ENABLED` | — / `true` | cascade tier 3 over hosted MCP. REST (`402`) needs a funded key |
+| `JINA_API_KEY` | — | cascade tier 4; `s.jina.ai` returns 401 without one |
+| `SEARCH_CASCADE_COOLDOWN_SECONDS` | `30` | pause live attempts after every tier fails |
 | `CRAWLER_FOLLOW_LINKS` | `true` | follow nested links after ingest |
 | `CRAWLER_MAX_DEPTH` | `2` | recursive crawl depth |
 | `CRAWLER_FOLLOW_DOMAINS` | `same` | `same`\|`all`\|`none` |
 | `CRAWLER_CONTINUOUS_ENABLED` | `true` | recrawl loop on |
 | `CRAWLER_RECRAWL_AFTER_SECONDS` | `604800` | re-crawl pages older than this |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | local embeddings (384-dim) |
+| `INSTALL_EMBEDDINGS` | `1` | **build arg.** Bakes torch into the gateway *and* worker images |
+| `BACKFILL_ENABLED` | `true` | background loop fills missing embeddings |
+| `BACKFILL_BATCH_SIZE` | `50` | documents per pass; drains continuously while work remains |
 | `FUSION_MODE` / `RRF_K` | `rrf` / `60` | fusion algorithm |
 | `RERANK_ENABLED` / `RERANK_TOP_K` | `true` / `20` | post-fusion rerank |
+| `RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | cross-encoder; empty disables semantic reranking |
+| `RERANK_MIN_SCORE` | `3.0` | drop results below this **logit** (see *Reranking*) |
+| `RERANK_LOW_CONFIDENCE_SCORE` | `4.5` | below this the response is flagged `low_confidence` |
+| `RERANK_CANDIDATE_POOL` | `30` | candidates scored; the tail cannot reach the page |
+| `SEARCH_ENRICH_TOP_N` | `15` | web results queued for full-text enrichment |
 | `SEARCH_CACHE_TTL_SECONDS` | `300` | result cache TTL |
+| `SEARCH_NEGATIVE_CACHE_TTL_SECONDS` | `30` | shorter TTL for empty/low-confidence answers |
 | `RATE_LIMIT_*` | see above | per-key quotas |
 | `BOOTSTRAP_ADMIN_API_KEY` | — | admin key seeded at startup |
 
-MCP server settings: `SEARCHOS_URL`, `SEARCHOS_API_KEY`, `SEARCHOS_ADMIN_KEY`, `MCP_HOST`, `MCP_PORT` (see [docs/mcp.md](docs/mcp.md)).
+MCP server settings: `SEARCHOS_URL`, `SEARCHOS_API_KEY`, `SEARCHOS_ADMIN_KEY`, `MCP_HOST`, `MCP_PORT`, `MCP_HTTP_TOKEN` (see [docs/mcp.md](docs/mcp.md)).
+
+### Enabling embeddings
+
+Vector search needs the embedder in **both** images. The gateway embeds the *query*; the worker embeds documents. Passing the build arg to only the worker lets the corpus gain vectors with no way to compare a query against them — the index looks healthy and `vector_search_available` stays `false` forever.
+
+```bash
+docker compose build && docker compose up -d
+curl -s localhost:8000/stats | grep -E 'vector_search_available|embedding_coverage'
+```
+
+After enabling it on an existing corpus, the backfill loop drains missing vectors in the background. Watch it with:
+
+```bash
+docker compose logs -f worker | grep backfill
+```
 
 ## Development
 

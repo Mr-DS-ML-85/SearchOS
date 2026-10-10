@@ -56,6 +56,17 @@ refuses to start otherwise rather than coming up silently locked out.
 docker compose --profile web up -d searxng
 ```
 
+SearXNG is the primary web tier. Tavily joins the cascade with no credentials at all
+(keyless access), so a fresh install already has a fallback; Exa and Jina add more depth
+with a key. See [Web fallback chain](searxng.md).
+
+To also serve the MCP endpoint over HTTP:
+
+```bash
+echo "MCP_HTTP_TOKEN=$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')" >> .env
+docker compose --profile mcp up -d
+```
+
 See [SearXNG fallback](searxng.md) for how it saves results into your index.
 
 ## 4. Create API keys

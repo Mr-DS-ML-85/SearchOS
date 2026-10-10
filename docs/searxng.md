@@ -26,7 +26,7 @@ So a cold query (or one about a niche topic the index doesn't cover) hits SearXN
 When SearXNG returns results for a query:
 
 1. Results are returned to the caller (mixed with local results, deduped by normalized URL — see below).
-2. The top-5 result URLs are enqueued for **snippet enrichment**, and the page itself is persisted as `source='web'` in `documents` (with metadata `{"searxng_snippet": true, "engine": "<engine>"}`).
+2. The top `SEARCH_ENRICH_TOP_N` result URLs (default 15) are enqueued for **snippet enrichment**, and the page itself is persisted as `source='web'` in `documents` (with metadata `{"searxng_snippet": true, "engine": "<engine>"}`).
 3. The worker may fully crawl a web result, upgrading it to a first-class indexed document.
 
 The next time you search for the same thing, the answers come from **your** index, and SearXNG is not contacted again (rate-limiter friendly).
