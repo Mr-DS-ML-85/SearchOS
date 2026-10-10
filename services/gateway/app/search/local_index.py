@@ -27,6 +27,23 @@ DOC_TSVECTOR_SIMPLE = "to_tsvector('simple', coalesce(d.title,'') || ' ' || coal
 # not pay for two index scans.
 _FTS_CONFIGS = (("english", DOC_TSVECTOR), ("simple", DOC_TSVECTOR_SIMPLE))
 
+
+# Per-language vector first: it is stemmed with the document's own language.
+# Rows with a NULL tsv (indexed before migration 0006) are not matched by it, so
+# the expression indexes above still cover them and remain in the list.
+def _safe_cfg(lang: str) -> str:
+    """Map a stored language to a regconfig, restricted to a known allowlist.
+
+    Bound as a parameter, but Postgres will still reject an unknown config name,
+    and `lang` is attacker-influenced via page metadata.
+    """
+    from app.search.langdetect import regconfig_for
+    from app.tsvector import ALLOWED_CONFIGS
+
+    cfg = regconfig_for(lang)
+    return cfg if cfg in ALLOWED_CONFIGS else "simple"
+
+
 # time_range windows. Previously this parameter was accepted and documented as a
 # "freshness filter" but never applied to the local or vector providers.
 # Seconds are used with make_interval() rather than a CAST(... AS interval)
@@ -131,26 +148,57 @@ class LocalIndexProvider(SearchProvider):
 
         rows: list = []
         async with self.session_factory() as session:
-            # english first, because it stems properly for English text, then
-            # `simple`, which does no stemming and no stopword removal and is the
-            # only configuration that works for documents in other languages.
-            # Falling through rather than running both keeps an English query to
-            # one index scan instead of two.
-            for config, expr in _FTS_CONFIGS:
-                # Only these two constants are interpolated; every caller-supplied
-                # value is a bound parameter.
-                base = f"""
-                    SELECT
-                        d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at,
-                        ts_rank_cd({expr}, to_tsquery('{config}', :tsq)) AS fts_score
-                    FROM documents d
-                    WHERE d.status = 'indexed'
-                      AND {expr} @@ to_tsquery('{config}', :tsq)
-                    """
-                for mode in ("AND", "OR") if or_fallback else ("AND",):
-                    tsq = self._build_tsquery(query.q, mode)
-                    if not tsq:
-                        continue
+            for mode in ("AND", "OR") if or_fallback else ("AND",):
+                tsq = self._build_tsquery(query.q, mode)
+                if not tsq:
+                    continue
+
+                # A per-language tsvector cannot be matched with one regconfig:
+                # each row was stemmed with the rules of its own language, so a
+                # French row's lexemes are not English ones. The query is
+                # therefore OR-ed across the language configs actually present,
+                # each scoped to the rows that used it.
+                lang_rows = await session.execute(
+                    text(
+                        """
+                        SELECT lang, count(*) FROM documents
+                        WHERE tsv IS NOT NULL AND status = 'indexed' AND lang IS NOT NULL
+                        GROUP BY lang
+                        """
+                    )
+                )
+                configs = [r[0] for r in lang_rows if r[0]]
+                if configs:
+                    clauses = " OR ".join(
+                        f"(d.lang = :lang_{i} AND d.tsv @@ to_tsquery(:cfg_{i}, :tsq))" for i in range(len(configs))
+                    )
+                    params_lang = {"tsq": tsq}
+                    for i, cfg in enumerate(configs):
+                        params_lang[f"lang_{i}"] = cfg
+                        params_lang[f"cfg_{i}"] = _safe_cfg(cfg)
+                    base = f"""
+                        SELECT
+                            d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at,
+                            ts_rank_cd(d.tsv, to_tsquery(:cfg_0, :tsq)) AS fts_score
+                        FROM documents d
+                        WHERE d.status = 'indexed' AND ({clauses})
+                        """
+                    sql = text(base + domain_sql + time_sql + order)  # noqa: S608 - values bound
+                    found = (await session.execute(sql, {**params, **params_lang})).mappings().all()
+                    if found:
+                        return found
+
+                # Rows with a NULL tsv — indexed before migration 0006 — are not
+                # covered above, so the expression indexes still apply to them.
+                for config, expr in _FTS_CONFIGS:
+                    base = f"""
+                        SELECT
+                            d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at,
+                            ts_rank_cd({expr}, to_tsquery('{config}', :tsq)) AS fts_score
+                        FROM documents d
+                        WHERE d.status = 'indexed' AND d.tsv IS NULL
+                          AND {expr} @@ to_tsquery('{config}', :tsq)
+                        """
                     sql = text(base + domain_sql + time_sql + order)  # noqa: S608 - values bound
                     rows = (await session.execute(sql, {**params, "tsq": tsq})).mappings().all()
                     if rows:

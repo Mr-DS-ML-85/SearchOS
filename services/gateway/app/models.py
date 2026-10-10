@@ -20,7 +20,7 @@ from sqlalchemy import (
     literal_column,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, REGCONFIG
+from sqlalchemy.dialects.postgresql import JSONB, REGCONFIG, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.config import EMBEDDING_DIM
@@ -67,6 +67,7 @@ class Document(Base):
     content_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     lang: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tsv: Mapped[object | None] = mapped_column(TSVECTOR, nullable=True)
     source: Mapped[str] = mapped_column(String(64), default="crawler")
     author: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -162,6 +163,19 @@ DOC_TSVECTOR_SIMPLE = func.to_tsvector(
 )
 
 Document.__table__.append_constraint(Index("ix_documents_fts_simple", DOC_TSVECTOR_SIMPLE, postgresql_using="gin"))
+
+# Per-language tsvector, written by the ingest worker.
+#
+# The two expression indexes above force one regconfig on the whole table, so a
+# document cannot be stemmed with the rules of its own language. Postgres cannot
+# generate this column either: `to_tsvector(regconfig, text)` is only IMMUTABLE
+# for a *literal* config, and here the config varies per row, so it has to be
+# computed in the application and stored.
+#
+# Populated in app/workers/ingest.py via app/search/langdetect.regconfig_for().
+# Rows indexed before this column existed have a NULL tsv and are repaired by
+# `python -m app.backfill_language`.
+Document.__table__.append_constraint(Index("ix_documents_tsv", Document.tsv, postgresql_using="gin"))
 
 # pgvector's HNSW access method takes the opclass as part of the column spec
 # (`USING hnsw (embedding vector_cosine_ops)`), not as a WITH parameter, and

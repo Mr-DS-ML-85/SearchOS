@@ -21,7 +21,9 @@ from app.extract.robots import RobotsChecker
 from app.logging import get_logger
 from app.metrics import get_metrics
 from app.models import Chunk, Document, IngestJob, IngestJobStatus, IngestKind
+from app.search.langdetect import detect as detect_language
 from app.search.politeness import wait_for_origin
+from app.tsvector import build_language_tsv
 
 logger = get_logger("workers.ingest")
 
@@ -134,6 +136,13 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
             status="indexed",
         )
 
+        # trafilatura reports a language for PDFs but returns None for most
+        # HTML, so every document was landing with lang=NULL and being stemmed
+        # with `english` regardless of what it was written in.
+        language = extracted.language or detect_language(f"{extracted.title or ''} {content[:4000]}")
+        doc.lang = language
+        doc.tsv = await build_language_tsv(language, f"{extracted.title or ''} {content}")
+
         chunks = chunk_text(
             content,
             max_tokens=settings.chunk_max_tokens,
@@ -180,6 +189,7 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
                 existing.content_text = doc.content_text
                 existing.content_hash = doc.content_hash
                 existing.lang = doc.lang
+                existing.tsv = doc.tsv
                 existing.status = "indexed"
                 existing.fetched_at = doc.fetched_at
                 doc = existing
