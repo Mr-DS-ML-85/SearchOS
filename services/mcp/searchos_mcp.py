@@ -142,6 +142,7 @@ def _search_schema() -> dict[str, Any]:
                     "vector",
                     "web",
                     "searxng",
+                    "google",
                     "tavily",
                     "exa",
                     "jina",
@@ -149,8 +150,9 @@ def _search_schema() -> dict[str, Any]:
                 ],
                 "description": (
                     "which providers to query. 'web' is the whole fallback cascade "
-                    "(SearXNG -> Tavily -> Exa -> Jina); the tier names pin one "
-                    "upstream and error rather than silently falling back; "
+                    "(SearXNG -> Google -> Tavily -> Exa -> Jina); the tier names pin one "
+                    "upstream and error rather than silently falling back ('google' is "
+                    "Google via the Proxify VM browser, ~12s, only when PROXIFY_URL is set); "
                     "'federated' queries the configured SearchOS peers."
                 ),
             },
@@ -221,6 +223,16 @@ def _images_schema() -> dict[str, Any]:
                 "description": "reference image URL — find images like this one",
             },
             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+            "source": {
+                "type": "string",
+                "enum": ["local", "google"],
+                "default": "local",
+                "description": (
+                    "'local' = CLIP over crawled images (text or image_url); 'google' = "
+                    "Google Images via Proxify (text query only, ~12s; url is Google's "
+                    "thumbnail, source_page the page it appears on)"
+                ),
+            },
         },
         # Exactly one of query / image_url is required. Not expressed as a
         # top-level anyOf because Anthropic's tool API rejects one; enforced in
@@ -570,6 +582,7 @@ async def handle_search_images(ctx: ServerRequestContext, params: types.CallTool
                 "q": query,
                 "image_url": image_url,
                 "limit": args.get("limit", 10),
+                "source": args.get("source"),
             },
         )
     except GatewayError as e:
@@ -595,6 +608,7 @@ async def handle_search_images(ctx: ServerRequestContext, params: types.CallTool
         json.dumps(
             {
                 "query": body.get("query"),
+                "source": body.get("source", "local"),
                 "took_ms": body.get("took_ms"),
                 "min_score": body.get("min_score"),
                 "below_min_score": body.get("below_min_score", 0),

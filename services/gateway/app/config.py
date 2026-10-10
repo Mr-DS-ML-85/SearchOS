@@ -109,6 +109,20 @@ class Settings(BaseSettings):
     # usually never runs. 5s keeps it useful — it does answer — while bounding
     # the worst case; the cascade still returns whatever earlier tiers produced.
     jina_timeout_seconds: float = 5.0
+    # Google web + image search through a self-hosted Proxify gateway
+    # (github.com/Mr-DS-ML-85/proxify). Empty disables both. Google is fetched
+    # in Proxify's headful VM Chrome; result links are /goto tokens that only
+    # resolve by following them, which uses the cheap `simple` strategy.
+    proxify_url: str = ""
+    proxify_browser: str = "gui_chrome"
+    proxify_resolve_browser: str = "simple"
+    # Measured ~10.5s for a results page in the VM browser.
+    proxify_timeout_seconds: float = 45.0
+    proxify_resolve_timeout_seconds: float = 15.0
+    proxify_resolve_concurrency: int = 5
+    # Where Google sits in the web cascade: "after_searxng" (fallback) or
+    # "first". It costs ~12s, so it is a fallback unless asked otherwise.
+    google_cascade_position: str = "after_searxng"
     # After the whole chain fails, refuse live attempts for this long and serve
     # the degraded local result instead. Without it every request pays the full
     # timeout of every dead tier.

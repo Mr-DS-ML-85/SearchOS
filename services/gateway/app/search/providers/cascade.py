@@ -91,80 +91,83 @@ class CascadeProvider(SearchProvider):
     async def search(self, query: ProviderQuery) -> ProviderResult:
         start = time.monotonic()
 
-        # One coroutine drives the cooldown flag; without the lock a burst of
-        # concurrent requests would each see a stale timestamp and all retry.
+        # The lock guards only the cooldown read. It used to wrap the whole tier
+        # loop, so every live-web search in the process ran one at a time: a
+        # second query waited for the first one's full chain (12s once Google
+        # is a tier) before it could even start.
         async with self._lock:
-            if self.in_cooldown:
-                result = ProviderResult(provider=self.name, query=query.q)
-                result.error = "web cascade in cooldown after upstream failure"
-                result.raw = {
-                    "cooldown": True,
-                    "retry_after_seconds": round(self._cooldown_until - time.monotonic(), 1),
-                    "tiers": [t.name for t in self.tiers],
-                }
-                result.latency_ms = (time.monotonic() - start) * 1000
-                get_metrics().provider_errors.labels(provider=self.name, kind="cooldown").inc()
-                return result
+            in_cooldown = self.in_cooldown
+        if in_cooldown:
+            result = ProviderResult(provider=self.name, query=query.q)
+            result.error = "web cascade in cooldown after upstream failure"
+            result.raw = {
+                "cooldown": True,
+                "retry_after_seconds": round(self._cooldown_until - time.monotonic(), 1),
+                "tiers": [t.name for t in self.tiers],
+            }
+            result.latency_ms = (time.monotonic() - start) * 1000
+            get_metrics().provider_errors.labels(provider=self.name, kind="cooldown").inc()
+            return result
 
-            combined = ProviderResult(provider=self.name, query=query.q)
-            attempted: list[str] = []
-            failures: list[str] = []
-            # Retry-After asked for by any tier in this attempt, so the cooldown
-            # can honour the upstream's own window rather than a fixed guess.
-            retry_waits: list[float] = []
+        combined = ProviderResult(provider=self.name, query=query.q)
+        attempted: list[str] = []
+        failures: list[str] = []
+        # Retry-After asked for by any tier in this attempt, so the cooldown
+        # can honour the upstream's own window rather than a fixed guess.
+        retry_waits: list[float] = []
 
-            for tier in self.tiers:
-                attempted.append(tier.name)
-                try:
-                    outcome = await tier.search(query)
-                except Exception as exc:  # a tier must never break the chain
-                    failures.append(f"{tier.name}: {exc.__class__.__name__}")
-                    get_metrics().provider_errors.labels(provider=tier.name, kind="exception").inc()
-                    continue
+        for tier in self.tiers:
+            attempted.append(tier.name)
+            try:
+                outcome = await tier.search(query)
+            except Exception as exc:  # a tier must never break the chain
+                failures.append(f"{tier.name}: {exc.__class__.__name__}")
+                get_metrics().provider_errors.labels(provider=tier.name, kind="exception").inc()
+                continue
 
-                if outcome.error:
-                    failures.append(outcome.error)
-                    get_metrics().provider_errors.labels(provider=tier.name, kind="http").inc()
-                    continue
+            if outcome.error:
+                failures.append(outcome.error)
+                get_metrics().provider_errors.labels(provider=tier.name, kind="http").inc()
+                continue
 
-                results = self._enforce_domains(query, outcome.results)
-                if outcome.retry_after:
-                    retry_waits.append(outcome.retry_after)
-                if not results:
-                    # Either nothing matched, or the domain filter removed
-                    # everything. Treat as a miss and keep descending.
-                    failures.append(f"{tier.name}: no results after domain filter")
-                    continue
+            results = self._enforce_domains(query, outcome.results)
+            if outcome.retry_after:
+                retry_waits.append(outcome.retry_after)
+            if not results:
+                # Either nothing matched, or the domain filter removed
+                # everything. Treat as a miss and keep descending.
+                failures.append(f"{tier.name}: no results after domain filter")
+                continue
 
-                combined.results = results
-                # Clear any cooldown from an earlier outage. Without this the
-                # flag survives until its original expiry even though the chain
-                # is healthy again, so a recovered service stays muted.
-                self._cooldown_until = 0.0
-                combined.raw = {
-                    "served_by": tier.name,
-                    "attempted": attempted,
-                    "fallback_used": tier.name != self.tiers[0].name,
-                    "degraded_tiers": failures,
-                }
-                if outcome.raw and isinstance(outcome.raw, dict):
-                    for key, value in outcome.raw.items():
-                        combined.raw.setdefault(key, value)
-                combined.latency_ms = (time.monotonic() - start) * 1000
-                logger.info(
-                    "web served by %s after %d tier(s): %s",
-                    tier.name,
-                    len(attempted),
-                    query.q[:60],
-                )
-                return combined
-
-            combined.error = "web cascade exhausted: " + " | ".join(failures[:4])
-            combined.raw = {"attempted": attempted, "degraded_tiers": failures}
+            combined.results = results
+            # Clear any cooldown from an earlier outage. Without this the
+            # flag survives until its original expiry even though the chain
+            # is healthy again, so a recovered service stays muted.
+            self._cooldown_until = 0.0
+            combined.raw = {
+                "served_by": tier.name,
+                "attempted": attempted,
+                "fallback_used": tier.name != self.tiers[0].name,
+                "degraded_tiers": failures,
+            }
+            if outcome.raw and isinstance(outcome.raw, dict):
+                for key, value in outcome.raw.items():
+                    combined.raw.setdefault(key, value)
             combined.latency_ms = (time.monotonic() - start) * 1000
-            # Respect the longest Retry-After any tier asked for.
-            self._open_cooldown(max(retry_waits) if retry_waits else None)
+            logger.info(
+                "web served by %s after %d tier(s): %s",
+                tier.name,
+                len(attempted),
+                query.q[:60],
+            )
             return combined
+
+        combined.error = "web cascade exhausted: " + " | ".join(failures[:4])
+        combined.raw = {"attempted": attempted, "degraded_tiers": failures}
+        combined.latency_ms = (time.monotonic() - start) * 1000
+        # Respect the longest Retry-After any tier asked for.
+        self._open_cooldown(max(retry_waits) if retry_waits else None)
+        return combined
 
 
 def build_cascade(settings=None) -> CascadeProvider | None:
@@ -201,6 +204,16 @@ def build_cascade(settings=None) -> CascadeProvider | None:
     # r.jina.ai (the reader) is open. Do not add an unkeyed search tier.
     if cfg.jina_api_key:
         tiers.append(JinaProvider(cfg.jina_api_key, cfg.jina_timeout_seconds))
+    if cfg.proxify_url:
+        from app.search.providers.google import GoogleProvider, build_client
+
+        google = GoogleProvider(build_client())
+        # ~12s per query (VM browser + link resolution), so by default it is
+        # the fallback after SearXNG rather than the first thing every query pays.
+        if cfg.google_cascade_position == "first":
+            tiers.insert(0, google)
+        else:
+            tiers.insert(1 if cfg.searxng_url else 0, google)
 
     if len(tiers) <= 1:
         return None

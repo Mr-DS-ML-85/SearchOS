@@ -177,6 +177,12 @@ services:
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       EXA_API_KEY: ${EXA_API_KEY:-}
       JINA_API_KEY: ${JINA_API_KEY:-}
+      # Google web + image search through Proxify. Empty disables it. Reaching
+      # the proxy-orchestrator container needs docker-compose.proxify.yml.
+      PROXIFY_URL: ${PROXIFY_URL:-}
+      PROXIFY_BROWSER: ${PROXIFY_BROWSER:-gui_chrome}
+      PROXIFY_TIMEOUT_SECONDS: ${PROXIFY_TIMEOUT_SECONDS:-45}
+      GOOGLE_CASCADE_POSITION: ${GOOGLE_CASCADE_POSITION:-after_searxng}
       SEARCH_CASCADE_ENABLED: ${SEARCH_CASCADE_ENABLED:-true}
       SEARCH_CASCADE_COOLDOWN_SECONDS: ${SEARCH_CASCADE_COOLDOWN_SECONDS:-30}
       # Comma-separated `name=url` peers queried alongside this instance.

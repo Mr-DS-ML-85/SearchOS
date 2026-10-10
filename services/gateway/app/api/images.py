@@ -6,7 +6,7 @@ similarity query rather than a special case.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -37,6 +37,8 @@ class ImageSearchResponse(BaseModel):
     #: Nearest images dropped by ``min_score``. Distinguishes "nothing in the
     #: index depicts this" from "the index has no images".
     below_min_score: int = 0
+    #: "local" (CLIP over the crawled index) or "google" (Google Images via Proxify).
+    source: str = "local"
 
 
 @router.get("/v1/images/search", response_model=ImageSearchResponse)
@@ -44,6 +46,7 @@ async def search_images(
     q: Annotated[str | None, Query(max_length=300)] = None,
     image_url: Annotated[str | None, Query(max_length=2048)] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
+    source: Annotated[Literal["local", "google"], Query()] = "local",
     _: ApiKey = Depends(current_api_key),
 ) -> ImageSearchResponse:
     """Text-to-image, or image-to-image when ``image_url`` is given.
@@ -62,6 +65,9 @@ async def search_images(
     if q and image_url:
         # image_url used to win silently, discarding the text the caller sent.
         raise ValidationError("provide q (text) or image_url (image), not both")
+
+    if source == "google":
+        return await _google_images(q, image_url, limit, started)
 
     if not clip.available():
         return ImageSearchResponse(
@@ -125,6 +131,45 @@ async def search_images(
         image_search_available=True,
         min_score=min_score,
         below_min_score=len(hits) - len(kept),
+    )
+
+
+async def _google_images(q: str | None, image_url: str | None, limit: int, started: float) -> ImageSearchResponse:
+    """Google Images through Proxify. Text queries only.
+
+    ``url`` is Google's thumbnail (full-size URLs are not in the results page);
+    ``source_url`` is the page the image appears on. Scores encode Google's
+    order, since Google gives no similarity.
+    """
+    import time
+
+    from app.errors import ProviderError, ValidationError
+    from app.search.providers.google import ProxifyError, build_client
+    from app.search.providers.google import search_images as google_search_images
+
+    if image_url:
+        raise ValidationError("source=google supports text queries (q) only")
+    client = build_client()
+    if client is None:
+        raise ProviderError("Google image search is not configured: set PROXIFY_URL")
+    try:
+        items = await google_search_images(client, q or "", limit)
+    except ProxifyError as e:
+        raise ProviderError(f"google images: {e}") from e
+    return ImageSearchResponse(
+        query=q,
+        images=[
+            ImageHit(
+                url=item["thumbnail"],
+                source_url=item.get("source_url"),
+                alt_text=item["title"],
+                score=round(1.0 - rank * 0.01, 4),
+            )
+            for rank, item in enumerate(items)
+        ],
+        took_ms=int((time.monotonic() - started) * 1000),
+        image_search_available=True,
+        source="google",
     )
 
 

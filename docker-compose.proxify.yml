@@ -1,0 +1,18 @@
+# Opt-in overlay: Google web + image search through a Proxify gateway
+# (github.com/Mr-DS-ML-85/proxify) running as its own compose project.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.proxify.yml up -d
+#
+# Joins the gateway to Proxify's network so it can reach proxy-orchestrator on
+# its API port. Proxify must already be running: the network is external.
+services:
+  gateway:
+    environment:
+      PROXIFY_URL: ${PROXIFY_URL:-http://proxy-orchestrator:8081}
+    networks:
+      - proxify
+
+networks:
+  proxify:
+    external: true
+    name: ${PROXIFY_NETWORK:-proxy-orchestrator_default}
