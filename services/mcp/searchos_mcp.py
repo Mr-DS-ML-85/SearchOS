@@ -107,6 +107,25 @@ def text_result(content: str, *, is_error: bool = False) -> types.CallToolResult
     return types.CallToolResult(content=[text(content)], is_error=is_error)
 
 
+def _as_bool(value: Any) -> bool | None:
+    """Coerce an MCP argument to bool, or None to leave the server default.
+
+    Models send JSON booleans, but some send "true"/"1"/"yes" as strings; an
+    unparsed "false" string is truthy in Python and would silently enable the
+    thing the caller asked to disable.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "on"):
+        return True
+    if text in ("false", "0", "no", "off"):
+        return False
+    return None
+
+
 def _search_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -163,6 +182,15 @@ def _search_schema() -> dict[str, Any]:
             },
             "offset": {"type": "integer", "default": 0},
             "cache": {"type": "boolean", "default": True, "description": "use the Redis result cache"},
+            "colbert": {
+                "type": "boolean",
+                "description": (
+                    "Force late-interaction (ColBERT) reranking on or off for this "
+                    "query, overriding the server default. Present so an A/B of the "
+                    "reranker is possible from an agent; results differ only in "
+                    "ordering and score."
+                ),
+            },
         },
         "required": ["query"],
     }
@@ -369,6 +397,9 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
                 # both makes the gateway prefer the cursor.
                 "cursor": args.get("cursor"),
                 "cache": args.get("cache", True),
+                # Only sent when the caller sets it, so the server default stands
+                # otherwise. Accepts true/false as well as on/1 strings.
+                "colbert": _as_bool(args.get("colbert")),
                 "domains": domains or None,
                 "exclude_domains": exclude_domains or None,
             },
@@ -398,6 +429,15 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
                 "offset": offset,
                 "took_ms": body.get("took_ms"),
                 "cache_hit": body.get("cache_hit"),
+                # The gateway distinguishes an exact cache hit from a semantic
+                # one (a rephrasing resolved by embedding). Whitelisting only
+                # cache_hit dropped that, so a semantic hit reported
+                # cache_hit=false and looked like a miss — including its
+                # latency, which is the thing worth seeing.
+                "cache_type": body.get("cache_type", "none"),
+                "semantic_cache_hit": body.get("semantic_cache_hit", False),
+                "semantic_cache_match": body.get("semantic_cache_match"),
+                "semantic_cache_similarity": body.get("semantic_cache_similarity"),
                 "degraded": body.get("degraded"),
                 "providers": body.get("providers"),
                 "results": results,

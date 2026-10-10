@@ -146,8 +146,17 @@ class SearchOrchestrator:
         if parsed.negated:
             query_text = f"{query_text} {' '.join('-' + t for t in parsed.negated)}".strip()
 
+        # Effective ColBERT setting, resolved before either cache identity is
+        # built. It has to be part of both: a response ordered by late
+        # interaction is a different answer to the same query, so serving one
+        # for the other setting is simply wrong.
+        colbert_on = req.colbert if req.colbert is not None else self.settings.colbert_enabled
+
         cursor_fingerprint = hashlib.sha256(
-            json.dumps([query_text, req.sources, sorted(domains), sorted(exclude_domains)], default=str).encode()
+            json.dumps(
+                [query_text, req.sources, sorted(domains), sorted(exclude_domains), colbert_on],
+                default=str,
+            ).encode()
         ).hexdigest()[:16]
 
         offset = min(req.offset, self.settings.search_max_offset)
@@ -171,15 +180,16 @@ class SearchOrchestrator:
             tuple(sorted(domains)),
             tuple(sorted(exclude_domains)),
             tuple(parsed.phrases),
+            # Same reason as the cursor fingerprint: the two settings produce
+            # different orderings of the same documents.
+            colbert_on,
         )
 
         if req.cache:
-            semantic = await self.semantic_cache.lookup(query_text, req.sources)
-            if semantic[0] is not None:
-                semantic[0]["query"] = req.q
-                semantic[0]["took_ms"] = int((time.monotonic() - start) * 1000)
-                return SearchResponse(**semantic[0])
-
+            # Exact match first, semantic second. The semantic lookup matches an
+            # identical query at 1.0, so checking it first meant a plain repeat
+            # of the same query was reported as a semantic hit — a true answer
+            # to the wrong question, which defeats the point of the flag.
             cached = await cache.get(cache_key_str)
             if cached is not None:
                 metrics.cache_hits.inc()
@@ -191,10 +201,20 @@ class SearchOrchestrator:
                 except Exception:
                     pass
                 cached["cache_hit"] = True
+                cached["cache_type"] = "exact"
                 cached["query"] = req.q
                 # A cache hit must not report the latency of the original fetch.
                 cached["took_ms"] = int((time.monotonic() - start) * 1000)
                 return SearchResponse(**cached)
+
+            semantic = await self.semantic_cache.lookup(query_text, req.sources)
+            if semantic[0] is not None:
+                semantic[0]["query"] = req.q
+                semantic[0]["took_ms"] = int((time.monotonic() - start) * 1000)
+                # cache_hit stays False for a semantic match, which made a served
+                # answer indistinguishable from a miss. cache_type says which.
+                semantic[0]["cache_type"] = "semantic"
+                return SearchResponse(**semantic[0])
 
             metrics.cache_misses.inc()
         providers = self.select_providers(req.sources)
@@ -255,12 +275,12 @@ class SearchOrchestrator:
         # cross-encoder is better at topical relevance; MaxSim is better at
         # partial token coverage. Reordering an already-good list is cheaper
         # and safer than substituting a weaker scorer for a stronger one.
-        if self.settings.colbert_enabled:
+        if colbert_on:
             try:
                 from app.db import get_session_factory
                 from app.search.colbert_index import colbert_rerank
 
-                ranked = await colbert_rerank(get_session_factory(), query_text, ranked)
+                ranked = await colbert_rerank(get_session_factory(), query_text, ranked, enabled=colbert_on)
             except Exception as exc:
                 # ColBERT is an enhancement; losing it must not lose the query.
                 logger.warning("colbert rerank skipped: %s: %s", exc.__class__.__name__, exc)

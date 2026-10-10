@@ -4,6 +4,27 @@ All endpoints accept `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
 ## `GET /v1/search`
 
+`cache_type` reports which cache answered: `none`, `exact` (same query text) or
+`semantic` (a rephrasing resolved through the embedding cache). `cache_hit` alone
+is ambiguous here — a semantic hit is a real hit but leaves `cache_hit=false`,
+which reads as a miss even though the response was served in ~20ms instead of
+~2s. `semantic_cache_match` and `semantic_cache_similarity` say which earlier
+query was reused and how close it scored.
+
+The semantic threshold is `SEMANTIC_CACHE_THRESHOLD` (default 0.92), deliberately
+high: a rephrasing that silently resolves to another question's answer is worse
+than a slow one. Measured pairs sit either side of it —
+
+    0.9095  tokio rust runtime ~ tokio rust runtime internals explained   (miss)
+    0.9465  ... internals explained ~ explain rust async runtime tokio ... (hit)
+
+so a paraphrase missing by 1% is expected behaviour, not a fault.
+
+`colbert` forces late-interaction reranking on or off for a single query,
+overriding the server default, so the reranker can be A/B'd from a client. It is
+part of both cache identities: a ColBERT-ordered answer is a different answer to
+the same query.
+
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | — | search query (required) |

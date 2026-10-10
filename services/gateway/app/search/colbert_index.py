@@ -43,6 +43,8 @@ async def colbert_rerank(
     session_factory: async_sessionmaker,
     query: str,
     candidates: list[SearchResult],
+    *,
+    enabled: bool | None = None,
 ) -> list[SearchResult]:
     """Rescore document-level candidates with MaxSim and reorder them.
 
@@ -57,7 +59,13 @@ async def colbert_rerank(
     results would cost far more than the ordering is worth.
     """
     settings = get_settings()
-    if not settings.colbert_enabled or not candidates:
+    # `enabled` is the caller's per-request override. Without this parameter the
+    # function re-read the server setting and returned immediately, so a
+    # per-request colbert=true was computed by the orchestrator and then thrown
+    # away — the toggle silently did nothing.
+    if (enabled if enabled is not None else settings.colbert_enabled) is False:
+        return candidates
+    if not candidates:
         return candidates
 
     from app.search import colbert
@@ -115,10 +123,14 @@ async def colbert_rerank(
     for result in scored:
         result.score = result.score + settings.colbert_weight * result.colbert_score
     scored.sort(key=lambda r: r.score, reverse=True)
-    # Unindexed chunks keep their original order behind scored ones rather than
-    # being dropped: a missing vector is an indexing gap, not evidence that a
-    # passage is irrelevant.
+    # One list, sorted on the final reported score. An earlier version put
+    # unscored items after scored ones to avoid "demoting" them, which produced
+    # rank=2 with score 7.64 above rank=3 with score 7.92 — the response
+    # contradicted its own ordering, and any caller filtering or thresholding on
+    # score got a different answer than the ranking implies. Unscored items are
+    # never dropped, they simply sort on their unchanged cross-encoder score.
     out = scored + unscored + tail
+    out.sort(key=lambda r: r.score, reverse=True)
     for position, result in enumerate(out, start=1):
         result.rank = position
     return out

@@ -29,6 +29,14 @@ class SearchRequest(BaseModel):
         ),
     )
     cache: bool = True
+    #: Per-request override for late-interaction reranking. None keeps the
+    #: server default. Exists so the reranker can be A/B'd from a client without
+    #: a redeploy, which is how its measured regression was found in the first
+    #: place.
+    colbert: bool | None = Field(
+        default=None,
+        description="force ColBERT reranking on/off for this query; null keeps the server default",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -104,6 +112,15 @@ class SearchResponse(BaseModel):
     )
     took_ms: int
     cache_hit: bool
+    cache_type: Literal["none", "exact", "semantic"] = Field(
+        "none",
+        description=(
+            "Which cache answered. 'exact' is the same query text; 'semantic' is a "
+            "rephrasing resolved through the embedding cache. `cache_hit` alone is "
+            "ambiguous here: a semantic hit is a real hit but leaves cache_hit=false, "
+            "which reads as a miss."
+        ),
+    )
     degraded: list[str]
     providers: list[str]
     top_score: float | None = Field(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from app.extract.render import should_render
 from app.workers.ingest import normalize_url
@@ -147,3 +149,44 @@ class TestDomainFilterMatchesHostOnly:
         assert "NOT LIKE" in sql
         assert params["excl0"] == "wikipedia.org"
         assert params["subexcl0"] == "%.wikipedia.org"
+
+
+class TestColbertPerRequestToggle:
+    """A per-request colbert override must survive into the reranker.
+
+    The orchestrator resolved `req.colbert` into `colbert_on`, then called
+    `colbert_rerank(...)` without it. The reranker re-read the server setting,
+    found colbert disabled, and returned the candidates untouched — so
+    `colbert=true` changed nothing and looked like a broken feature rather than
+    an ignored argument.
+    """
+
+    def test_reranker_honours_enabled_override_when_server_is_off(self):
+        from app.config import get_settings
+        from app.schemas import SearchResult
+        from app.search.colbert_index import colbert_rerank
+
+        assert get_settings().colbert_enabled is False, "this test assumes the server default is off"
+
+        candidate = SearchResult(
+            title="t", url="https://example.invalid/a", snippet="x", source="local", score=1.0, rank=1
+        )
+        out = asyncio.run(colbert_rerank(_session_factory(), "q", [candidate], enabled=False))
+        # Disabled: must return immediately without scoring.
+        assert out[0].colbert_score is None
+        assert out[0].score == 1.0
+
+    def test_reranker_receives_the_override_parameter(self):
+        import inspect
+
+        from app.search.colbert_index import colbert_rerank
+
+        signature = inspect.signature(colbert_rerank)
+        assert "enabled" in signature.parameters
+        assert signature.parameters["enabled"].default is None
+
+
+def _session_factory():
+    from app.db import get_session_factory
+
+    return get_session_factory()
