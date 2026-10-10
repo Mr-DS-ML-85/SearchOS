@@ -157,14 +157,26 @@ def _search_schema() -> dict[str, Any]:
             "cursor": {
                 "type": "string",
                 "description": (
-                    "opaque cursor from a previous response. Prefer over offset for "
-                    "deep paging: OFFSET makes Postgres walk and discard every "
-                    "skipped row, so page 50 costs about 50x page 1."
+                    "next_cursor from a previous response to fetch the following page. "
+                    "Bound to that response's query and filters; do not combine with offset."
                 ),
             },
             "num_results": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
-            "language": {"type": "string", "description": "e.g. 'en'"},
-            "country": {"type": "string", "description": "e.g. 'us'"},
+            "language": {
+                "type": "string",
+                "description": (
+                    "ISO 639-1 code, e.g. 'en' or 'fr'. Indexed results are limited to "
+                    "documents detected as that language; web tiers receive it as a locale."
+                ),
+            },
+            "country": {
+                "type": "string",
+                "description": (
+                    "ISO 3166 code, e.g. 'ca'. Only combined with `language` into a web "
+                    "locale (fr + ca -> fr-CA); indexed documents carry no country, so it "
+                    "has no effect without `language` or on local/vector results."
+                ),
+            },
             "time_range": {
                 "type": "string",
                 "enum": ["day", "week", "month", "year", "all"],
@@ -210,6 +222,9 @@ def _images_schema() -> dict[str, Any]:
             },
             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
         },
+        # Exactly one of query / image_url is required. Not expressed as a
+        # top-level anyOf because Anthropic's tool API rejects one; enforced in
+        # handle_search_images instead.
         "additionalProperties": False,
     }
 
@@ -260,7 +275,9 @@ def _tools() -> list[types.Tool]:
                 "Search the SearchOS index + live web. Queries first hit the local "
                 "FTS/vector index; if local coverage is thin, SearXNG live results are "
                 "merged, saved, and re-crawled into the index so repeat queries are served "
-                "locally. Returns JSON results with title, url, snippet, source and score."
+                "locally. Returns JSON results with title, url, snippet, source and score. "
+                'The query accepts operators: site:, -site:, filetype:, "exact phrase", -term. '
+                "Page with next_cursor while has_more is true."
             ),
             input_schema=_search_schema(),
         ),
@@ -307,8 +324,10 @@ def _tools() -> list[types.Tool]:
             description=(
                 "Find images by what they depict. CLIP embeds images and text into one "
                 "space, so text-to-image and image-to-image are the same operation: pass "
-                "either `query` (text) or `image_url` (reference image). Images are "
-                "indexed as pages are crawled; icons and undersized assets are skipped."
+                "exactly one of `query` (text) or `image_url` (reference image). Images are "
+                "indexed as pages are crawled; icons and undersized assets are skipped. "
+                "Text queries drop matches below `min_score`; `below_min_score` counts them, "
+                "so an empty list with a non-zero count means nothing indexed depicts the query."
             ),
             input_schema=_images_schema(),
         ),
@@ -377,7 +396,9 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
         offset = 0
     cursor = args.get("cursor") or None
     if cursor and offset:
-        return text_result("pass either cursor or offset, not both (a cursor already encodes its offset)", is_error=True)
+        return text_result(
+            "pass either cursor or offset, not both (a cursor already encodes its offset)", is_error=True
+        )
     # The gateway accepts domains as repeated query params (or a comma list);
     # a bare comma-joined string used to be parsed as one element and matched
     # nothing, silently.
@@ -433,7 +454,9 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
                 # gateway returns one, but this whitelist dropped it: has_more
                 # said "there is a next page" with no way to ask for it.
                 "next_cursor": body.get("next_cursor"),
-                "offset": offset,
+                # On a cursor page the offset lives inside the cursor; echoing the
+                # argument default (0) misreported where the page starts.
+                "offset": None if cursor else offset,
                 "took_ms": body.get("took_ms"),
                 # Without these an agent cannot tell a weak match from an answer,
                 # or an upstream that returned nothing from one that never ran.
@@ -527,6 +550,9 @@ async def handle_search_images(ctx: ServerRequestContext, params: types.CallTool
     args = params.arguments or {}
     query = args.get("query")
     image_url = args.get("image_url")
+    if query and image_url:
+        # The gateway used image_url and silently ignored the text.
+        return text_result("pass either 'query' or 'image_url', not both", is_error=True)
     if not query and not image_url:
         # The gateway rejects this too, but an agent benefits from being told
         # which argument is missing rather than seeing a bare 422.
@@ -567,7 +593,13 @@ async def handle_search_images(ctx: ServerRequestContext, params: types.CallTool
     ]
     return text_result(
         json.dumps(
-            {"query": body.get("query"), "took_ms": body.get("took_ms"), "images": images},
+            {
+                "query": body.get("query"),
+                "took_ms": body.get("took_ms"),
+                "min_score": body.get("min_score"),
+                "below_min_score": body.get("below_min_score", 0),
+                "images": images,
+            },
             indent=2,
             ensure_ascii=False,
         )

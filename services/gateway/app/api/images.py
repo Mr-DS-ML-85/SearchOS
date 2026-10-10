@@ -33,6 +33,10 @@ class ImageSearchResponse(BaseModel):
     images: list[ImageHit]
     took_ms: int
     image_search_available: bool
+    min_score: float | None = None
+    #: Nearest images dropped by ``min_score``. Distinguishes "nothing in the
+    #: index depicts this" from "the index has no images".
+    below_min_score: int = 0
 
 
 @router.get("/v1/images/search", response_model=ImageSearchResponse)
@@ -55,6 +59,9 @@ async def search_images(
     started = time.monotonic()
     if not q and not image_url:
         raise ValidationError("provide q (text) or image_url (image)")
+    if q and image_url:
+        # image_url used to win silently, discarding the text the caller sent.
+        raise ValidationError("provide q (text) or image_url (image), not both")
 
     if not clip.available():
         return ImageSearchResponse(
@@ -77,6 +84,9 @@ async def search_images(
             image_search_available=True,
         )
 
+    from app.config import get_settings
+
+    min_score = None if image_url else get_settings().image_text_min_score
     session_factory = get_session_factory()
     async with session_factory() as session:
         rows = (
@@ -92,25 +102,29 @@ async def search_images(
             .all()
         )
 
+    hits = [
+        ImageHit(
+            url=row.url,
+            source_url=row.source_url,
+            alt_text=row.alt_text,
+            width=row.width,
+            height=row.height,
+            # Ordering already came from pgvector's cosine_distance. The
+            # returned column is a plain list, not a Vector, so recompute the
+            # similarity as a dot product — CLIP vectors are L2-normalised,
+            # so that is the cosine.
+            score=round(_dot(row.embedding, vector), 4),
+        )
+        for row in rows
+    ]
+    kept = [h for h in hits if min_score is None or h.score >= min_score]
     return ImageSearchResponse(
         query=q or image_url,
-        images=[
-            ImageHit(
-                url=row.url,
-                source_url=row.source_url,
-                alt_text=row.alt_text,
-                width=row.width,
-                height=row.height,
-                # Ordering already came from pgvector's cosine_distance. The
-                # returned column is a plain list, not a Vector, so recompute the
-                # similarity as a dot product — CLIP vectors are L2-normalised,
-                # so that is the cosine.
-                score=round(_dot(row.embedding, vector), 4),
-            )
-            for row in rows
-        ],
+        images=kept,
         took_ms=int((time.monotonic() - started) * 1000),
         image_search_available=True,
+        min_score=min_score,
+        below_min_score=len(hits) - len(kept),
     )
 
 

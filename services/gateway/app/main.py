@@ -104,9 +104,22 @@ async def lifespan(app: FastAPI):
                 logger.info("embedding model warm: %s", settings.embedding_model)
             except Exception as exc:
                 logger.warning("embedding model warm failed: %s: %s", exc.__class__.__name__, exc)
-        # CLIP is loaded lazily on first image query, not here. Warming it at
-        # startup pulled a ~600MB download into the boot path and made every
-        # deployment pay for a feature most deployments never use.
+        # CLIP is never *downloaded* at startup: that pulled ~600MB into the
+        # boot path for a feature most deployments never use. But once the
+        # weights are already on disk, loading lazily made the first image
+        # query on every uvicorn worker pay 4-7s (15s for image-to-image), so
+        # warm it when it is cached locally.
+        if settings.images_enabled:
+            try:
+                from huggingface_hub import try_to_load_from_cache
+
+                from app.search import images as clip
+
+                if isinstance(try_to_load_from_cache(settings.clip_model, "config.json"), str):
+                    if await asyncio.to_thread(clip.warm):
+                        logger.info("CLIP warm: %s", settings.clip_model)
+            except Exception as exc:
+                logger.warning("CLIP warm skipped: %s: %s", exc.__class__.__name__, exc)
         if settings.rerank_enabled and settings.rerank_model:
             try:
                 from app.search.rerank import get_cross_encoder

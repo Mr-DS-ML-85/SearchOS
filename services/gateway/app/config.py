@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     image_max_bytes: int = 8_000_000
     image_max_per_document: int = 12
     images_enabled: bool = True
+    #: Text-to-image similarity floor. CLIP ViT-B/32 cosine between a caption and
+    #: a matching photo sits around 0.28-0.32; unrelated pairs land at 0.18-0.22
+    #: (measured on this corpus). Without a floor, a query with no matching image
+    #: returned the nearest unrelated ones — yachts for "event loop diagram".
+    #: Not applied to image-to-image, whose similarities live on another scale.
+    image_text_min_score: float = 0.24
     # ColBERT late interaction. Off by default: it costs ~64KB per chunk on top
     # of the chunk embedding, and most queries do not need token-level matching.
     # How long a semantic-cache entry may match. Bounded by the result cache

@@ -104,9 +104,11 @@ class TestEmbeddingDegradationIsLoud:
         vectors and status='indexed', and nothing anywhere said so."""
         import inspect
 
-        from app.workers.ingest import process_ingest_job
+        # The indexing body moved into index_document, which every write path
+        # (ingest, snippet enrichment, backfill repair) now shares.
+        from app.workers.ingest import index_document
 
-        src = inspect.getsource(process_ingest_job)
+        src = inspect.getsource(index_document)
         assert 'embedding_skipped_reason = "unavailable"' in src
         assert "embedding_skipped.labels" in src
         assert "documents_without_vectors" in src

@@ -30,6 +30,10 @@ def _last_term(text: str) -> str:
     return terms[-1] if terms else ""
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class Suggestion(BaseModel):
     text: str
     count: int = 0
@@ -98,7 +102,9 @@ async def suggest(
             await session.scalars(
                 select(Document.title)
                 .where(Document.title.is_not(None))
-                .where(func.lower(Document.title).like(f"%{needle}%"))
+                # `_` is a word character the term regex keeps, and a LIKE
+                # wildcard: "my_var" also matched "myXvar".
+                .where(func.lower(Document.title).like(f"%{_escape_like(needle)}%", escape="\\"))
                 .order_by(Document.fetched_at.desc())
                 .limit(limit * 4)
             )

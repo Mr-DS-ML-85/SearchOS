@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from urllib.parse import urljoin
 
@@ -55,7 +56,9 @@ _ICON_HINTS = (
 
 
 def _attrs(tag: str) -> dict[str, str]:
-    return {m.group(1).lower(): (m.group(2) or m.group(3) or "") for m in _ATTR_RE.finditer(tag)}
+    # Attribute values are HTML-escaped: src="a.jpg?x=1&amp;y=2" is the URL
+    # a.jpg?x=1&y=2. Stored raw, every query-string URL kept a literal "&amp;".
+    return {m.group(1).lower(): html.unescape(m.group(2) or m.group(3) or "") for m in _ATTR_RE.finditer(tag)}
 
 
 def extract_image_urls(html: str, base_url: str, limit: int) -> list[tuple[str, str | None]]:

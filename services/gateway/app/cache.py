@@ -116,6 +116,8 @@ class Cache:
             if results == 0:
                 await self._client.zincrby(_QUERY_EMPTY_KEY, 1, q)
             await self._client.expire(_QUERY_STATS_KEY, settings_ttl())
+            # The empty-result counter had no expiry at all, so it grew forever.
+            await self._client.expire(_QUERY_EMPTY_KEY, settings_ttl())
         except Exception:
             pass
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import get_settings
@@ -65,7 +65,10 @@ async def backfill_document_chunks(session_factory: async_sessionmaker, *, limit
                 await session.scalars(
                     select(Document)
                     .where(Document.status == "indexed")
-                    .where(Document.content_text.is_not(None))
+                    # '' is not NULL. Empty rows can never produce a chunk, so
+                    # they were re-selected on every pass and, oldest-first,
+                    # could fill the whole batch and stall the backfill.
+                    .where(func.length(Document.content_text) > 0)
                     .where(~Document.chunks.any())
                     .order_by(Document.fetched_at.asc())
                     .limit(limit)
@@ -158,16 +161,63 @@ async def backfill_missing_vectors(session_factory: async_sessionmaker, *, limit
     return len(chunks)
 
 
+# SearXNG stores at most this many characters of a snippet; anything longer
+# flagged as a snippet was replaced by a fetched page.
+_SNIPPET_MAX_CHARS = 300
+
+
+async def repair_enriched_snippets(session_factory: async_sessionmaker, *, limit: int) -> int:
+    """Re-index documents whose content was enriched without being re-derived.
+
+    Before index_document existed, snippet enrichment replaced content_text
+    and nothing else: chunks and vectors still described the snippet and the
+    snippet flag stayed set. Those rows are recognisable — flagged, but longer
+    than any snippet — and are rebuilt from the stored text, without a fetch.
+    """
+    from types import SimpleNamespace
+
+    from app.search.providers.searxng import SNIPPET_META_FLAG
+    from app.workers.ingest import index_document
+
+    async with session_factory() as session:
+        docs = list(
+            (
+                await session.scalars(
+                    select(Document)
+                    .where(Document.meta[SNIPPET_META_FLAG].astext == "true")
+                    .where(func.length(Document.content_text) > _SNIPPET_MAX_CHARS)
+                    .limit(limit)
+                )
+            ).all()
+        )
+    repaired = 0
+    for doc in docs:
+        extracted = SimpleNamespace(
+            content=doc.content_text, title=doc.title, language=None, author=None, published=None
+        )
+        try:
+            await index_document(
+                session_factory, url=doc.url, final_url=doc.url, extracted=extracted, source=doc.source
+            )
+            repaired += 1
+        except Exception as exc:
+            logger.warning("snippet repair failed for %s: %s: %s", doc.url, exc.__class__.__name__, exc)
+    if repaired:
+        logger.info("re-indexed %d enriched snippet documents", repaired)
+    return repaired
+
+
 async def run_backfill(session_factory: async_sessionmaker) -> dict[str, int]:
     """One full pass. Returns counts so callers can log or report progress."""
     settings = get_settings()
     embedding = get_embedding_provider()
     if not embedding.available:
-        return {"chunks_created": 0, "vectors_filled": 0}
+        return {"chunks_created": 0, "vectors_filled": 0, "snippets_repaired": 0}
 
+    repaired = await repair_enriched_snippets(session_factory, limit=settings.backfill_batch_size)
     created = await backfill_document_chunks(session_factory, limit=settings.backfill_batch_size)
     filled = await backfill_missing_vectors(session_factory, limit=settings.backfill_batch_size)
-    return {"chunks_created": created, "vectors_filled": filled}
+    return {"chunks_created": created, "vectors_filled": filled, "snippets_repaired": repaired}
 
 
 async def backfill_loop(session_factory: async_sessionmaker) -> None:

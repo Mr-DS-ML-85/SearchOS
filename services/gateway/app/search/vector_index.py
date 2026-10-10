@@ -11,6 +11,7 @@ from app.schemas import SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.search.snippets import build_snippet
 
+
 # One row per *document*, using the best-matching chunk.
 #
 # The previous query returned one row per chunk, so a 30-chunk page occupied 30
@@ -50,6 +51,7 @@ def build_sql(filter_sql: str = ""):
         LIMIT :limit
         """  # noqa: S608 - filter values are bound parameters
     )
+
 
 # Candidate retrieval scans more chunks than the number of documents we want, so
 # a single long document cannot crowd out the rest of the result set.
