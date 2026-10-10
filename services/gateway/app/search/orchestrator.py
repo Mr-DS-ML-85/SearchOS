@@ -10,7 +10,7 @@ from app.metrics import get_metrics
 from app.schemas import SearchRequest, SearchResponse, SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.search.fusion import reciprocal_rank_fusion
-from app.search.rerank import CrossEncoderReranker, Reranker
+from app.search.rerank import Reranker, get_cross_encoder
 
 
 @dataclass
@@ -29,11 +29,8 @@ class SearchOrchestrator:
             self.reranker = Reranker(
                 enabled=self.settings.rerank_enabled,
                 top_k=self.settings.rerank_top_k,
-                cross_encoder=(
-                    CrossEncoderReranker(self.settings.rerank_model, batch_size=self.settings.rerank_batch_size)
-                    if self.settings.rerank_model
-                    else None
-                ),
+                candidate_pool=self.settings.rerank_candidate_pool,
+                cross_encoder=(get_cross_encoder() if self.settings.rerank_model else None),
             )
 
     def select_providers(self, sources: str) -> list[SearchProvider]:
@@ -169,12 +166,21 @@ class SearchOrchestrator:
         # is still useful, and refusing to cache here made a single permanently
         # broken provider keep the cache cold for every query forever.
         if req.cache:
-            await cache.set(cache_key_str, response.model_dump(), ttl_seconds=self.settings.search_cache_ttl_seconds)
+            # An empty or low-confidence answer is the one most likely to be
+            # wrong a moment later — the index may still be draining, or
+            # SearXNG may have recovered. Caching it for the full TTL means a
+            # fixed miss stays fixed for minutes.
+            weak = not results or low_confidence
+            ttl = self.settings.search_negative_cache_ttl_seconds if weak else self.settings.search_cache_ttl_seconds
+            await cache.set(cache_key_str, response.model_dump(), ttl_seconds=ttl)
 
         try:
             from app.workers.snippet import enqueue_snippets
 
-            await enqueue_snippets([r.url for r in results[:5]])
+            # Was a hardcoded top 5, so an all-sources query returned 40 results
+            # of which 35 carried only a search-engine snippet. The rest stay
+            # queue-backed so this stays off the request path.
+            await enqueue_snippets([r.url for r in results[: self.settings.search_enrich_top_n]])
         except Exception:
             pass
 

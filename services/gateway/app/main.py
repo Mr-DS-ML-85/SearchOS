@@ -106,10 +106,11 @@ async def lifespan(app: FastAPI):
                 logger.warning("embedding model warm failed: %s: %s", exc.__class__.__name__, exc)
         if settings.rerank_enabled and settings.rerank_model:
             try:
-                from app.search.rerank import CrossEncoderReranker
+                from app.search.rerank import get_cross_encoder
 
-                ce = CrossEncoderReranker(settings.rerank_model, batch_size=settings.rerank_batch_size)
-                if await asyncio.to_thread(ce.warm):
+                # Warm the singleton the request path actually uses. Warming a
+                # separate instance here left the first query paying the load.
+                if await asyncio.to_thread(get_cross_encoder().warm):
                     logger.info("rerank model warm: %s", settings.rerank_model)
                 else:
                     logger.warning(

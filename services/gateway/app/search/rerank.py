@@ -73,6 +73,9 @@ class CrossEncoderReranker:
         return self._ensure_model() is not None
 
 
+_cross_encoder: CrossEncoderReranker | None = None
+
+
 class Reranker:
     """Reorder fused candidates, preferring a cross-encoder when one is available.
 
@@ -88,12 +91,14 @@ class Reranker:
         domain_weights: dict[str, float] | None = None,
         engine_weights: dict[str, float] | None = None,
         cross_encoder: CrossEncoderReranker | None = None,
+        candidate_pool: int = 30,
     ) -> None:
         self.enabled = enabled
         self.top_k = top_k
         self.domain_weights = domain_weights or {}
         self.engine_weights = engine_weights or {}
         self.cross_encoder = cross_encoder
+        self.candidate_pool = max(candidate_pool, top_k)
 
     def _boost(self, query: str, r: SearchResult) -> float:
         terms = query_terms(query)
@@ -117,15 +122,20 @@ class Reranker:
             return results
 
         if self.cross_encoder is not None:
+            # Only the head of the list can survive into the page, so scoring
+            # every fused candidate is wasted inference — an all-sources query
+            # can fuse 100+, and each one is a forward pass.
+            pool = sorted(results, key=lambda x: x.score, reverse=True)[: self.candidate_pool]
+            tail = [r for r in results if r not in pool]
             scores = await asyncio.to_thread(
                 self.cross_encoder.score,
                 query,
-                [(r.title or "", r.snippet or "") for r in results],
+                [(r.title or "", r.snippet or "") for r in pool],
             )
-            if scores and len(scores) == len(results):
-                for r, score in zip(results, scores, strict=True):
+            if scores and len(scores) == len(pool):
+                for r, score in zip(pool, scores, strict=True):
                     r.score = round(score, 6)
-                return sorted(results, key=lambda x: x.score, reverse=True)[: self.top_k]
+                return sorted(pool, key=lambda x: x.score, reverse=True)[: self.top_k] + tail
 
         return self.rerank(query, results)
 
@@ -140,9 +150,20 @@ class Reranker:
         return ranked[: self.top_k]
 
 
+def get_cross_encoder() -> CrossEncoderReranker:
+    """Return a process-wide cross-encoder singleton.
+
+    The orchestrator is rebuilt per request, so a per-instance reranker reloaded
+    the model from disk on every search — that alone turned a 126ms local query
+    into 2.4s, and a cold all-sources query into 26s.
+    """
+    global _cross_encoder
+    if _cross_encoder is None:
+        settings = get_settings()
+        _cross_encoder = CrossEncoderReranker(settings.rerank_model, batch_size=settings.rerank_batch_size)
+    return _cross_encoder
+
+
 def build_reranker(settings=None) -> Reranker:
     cfg = settings or get_settings()
-    cross_encoder = (
-        CrossEncoderReranker(cfg.rerank_model, batch_size=cfg.rerank_batch_size) if cfg.rerank_model else None
-    )
-    return Reranker(enabled=cfg.rerank_enabled, top_k=cfg.rerank_top_k, cross_encoder=cross_encoder)
+    return Reranker(enabled=cfg.rerank_enabled, top_k=cfg.rerank_top_k, cross_encoder=get_cross_encoder())

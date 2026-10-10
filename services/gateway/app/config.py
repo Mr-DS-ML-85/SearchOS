@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     # cannot support a meaningful relevance threshold.
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
     rerank_batch_size: int = 32
+    # Candidates handed to the cross-encoder. Beyond this the tail cannot
+    # reach the result page, so scoring it is wasted inference.
+    rerank_candidate_pool: int = 30
     # Thresholds are in cross-encoder logit units, not 0-1. Measured on this corpus
     # with ms-marco-MiniLM-L6-v2: relevant queries scored 4.94-9.34, nonsense 1.16
     # and below. A sigmoid squashed that to 0.995-1.0 vs 0.76, too narrow to cut on.
@@ -113,6 +116,9 @@ class Settings(BaseSettings):
     rerank_low_confidence_score: float = 4.5
 
     search_cache_ttl_seconds: int = 300
+    # Empty and low-confidence responses expire fast so a transient miss does
+    # not pin itself for the full TTL.
+    search_negative_cache_ttl_seconds: int = 30
     extract_cache_ttl_seconds: int = 3600
 
     extract_max_bytes: int = 5242880
@@ -164,6 +170,10 @@ class Settings(BaseSettings):
     crawler_recrawl_batch: int = 100
 
     search_max_offset: int = 1000
+    # Web results queued for full-text enrichment per search. Anything past
+    # this is served as a search-engine snippet, so a larger N means a larger
+    # share of the response is real content.
+    search_enrich_top_n: int = 15
     search_max_candidates: int = 100
     vector_min_similarity: float = 0.0
 
