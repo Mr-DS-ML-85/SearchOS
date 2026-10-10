@@ -51,6 +51,10 @@ class Metrics:
             buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
         )
         self.documents_indexed = Counter("searchos_documents_indexed_total", "Documents indexed")
+        self.deduped_near_duplicates = Counter(
+            "searchos_deduped_near_duplicates_total",
+            "Results dropped because a near-identical document was already ranked higher",
+        )
         self.crawl_politeness_wait = Histogram(
             "searchos_crawl_politeness_wait_seconds",
             "Time the crawler spent waiting to respect per-origin politeness",

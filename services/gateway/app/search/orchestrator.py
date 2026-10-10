@@ -15,6 +15,7 @@ from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.search.fusion import reciprocal_rank_fusion
 from app.search.operators import parse as parse_query
 from app.search.rerank import Reranker, get_cross_encoder
+from app.search.simhash import near_duplicate, to_signed
 
 
 def encode_cursor(offset: int, fingerprint: str) -> str:
@@ -41,6 +42,32 @@ def decode_cursor(cursor: str) -> int | None:
         return int(data["o"])
     except Exception:
         return None
+
+
+def _dedupe_near_duplicates(results: list, threshold: int) -> tuple[list, int]:
+    """Collapse results whose content fingerprints are within ``threshold``.
+
+    URL normalisation only catches http/https and www variants of the same
+    address. A syndicated article or a mirrored documentation page has several
+    genuinely different URLs but near-identical content, and used to occupy
+    several slots in one page of results.
+    """
+    kept: list = []
+    seen: list[int] = []
+    dropped = 0
+    for r in results:
+        raw = getattr(r, "raw", None) or {}
+        fingerprint = raw.get("simhash") if isinstance(raw, dict) else None
+        if fingerprint is None:
+            kept.append(r)
+            continue
+        signed = to_signed(int(fingerprint))
+        if any(near_duplicate(signed, other, threshold) for other in seen):
+            dropped += 1
+            continue
+        seen.append(signed)
+        kept.append(r)
+    return kept, dropped
 
 
 def _operators_summary(parsed) -> dict:
@@ -220,6 +247,12 @@ class SearchOrchestrator:
             total = len(ranked)
 
         low_confidence = not ranked or ranked[0].score < self.settings.rerank_low_confidence_score
+
+        if self.settings.dedupe_near_duplicates:
+            ranked, dropped = _dedupe_near_duplicates(ranked, self.settings.dedupe_simhash_threshold)
+            if dropped:
+                metrics.deduped_near_duplicates.inc(dropped)
+            total = len(ranked)
 
         if parsed.filetypes:
             ranked = _filter_by_filetype(ranked, parsed.filetypes)

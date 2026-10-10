@@ -203,6 +203,11 @@ class Settings(BaseSettings):
     # this is served as a search-engine snippet, so a larger N means a larger
     # share of the response is real content.
     search_enrich_top_n: int = 15
+    # Collapse results whose 64-bit content fingerprints are within this
+    # Hamming distance. Measured: a mirror with a footer added differs by 1,
+    # a 75% truncation by 0, and a different article on the same topic by ~28.
+    dedupe_near_duplicates: bool = True
+    dedupe_simhash_threshold: int = 6
     search_max_candidates: int = 100
     vector_min_similarity: float = 0.0
 

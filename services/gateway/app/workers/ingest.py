@@ -23,6 +23,7 @@ from app.metrics import get_metrics
 from app.models import Chunk, Document, IngestJob, IngestJobStatus, IngestKind
 from app.search.langdetect import detect as detect_language
 from app.search.politeness import wait_for_origin
+from app.search.simhash import simhash
 from app.tsvector import build_language_tsv
 
 logger = get_logger("workers.ingest")
@@ -142,6 +143,7 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
         language = extracted.language or detect_language(f"{extracted.title or ''} {content[:4000]}")
         doc.lang = language
         doc.tsv = await build_language_tsv(language, f"{extracted.title or ''} {content}")
+        doc.simhash = simhash(content)
 
         chunks = chunk_text(
             content,
@@ -190,6 +192,7 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
                 existing.content_hash = doc.content_hash
                 existing.lang = doc.lang
                 existing.tsv = doc.tsv
+                existing.simhash = doc.simhash
                 existing.status = "indexed"
                 existing.fetched_at = doc.fetched_at
                 doc = existing

@@ -68,6 +68,8 @@ class Document(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     lang: Mapped[str | None] = mapped_column(String(16), nullable=True)
     tsv: Mapped[object | None] = mapped_column(TSVECTOR, nullable=True)
+    #: 64-bit content fingerprint for near-duplicate detection; see app/search/simhash.py
+    simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source: Mapped[str] = mapped_column(String(64), default="crawler")
     author: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

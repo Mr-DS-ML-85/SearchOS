@@ -128,6 +128,7 @@ class LocalIndexProvider(SearchProvider):
                     rank=rank,
                     published=row["published_at"].isoformat() if row["published_at"] else None,
                     domain=_domain(row["url"]),
+                    raw={"simhash": row["simhash"]} if row.get("simhash") is not None else None,
                 )
             )
 
@@ -178,7 +179,7 @@ class LocalIndexProvider(SearchProvider):
                         params_lang[f"cfg_{i}"] = _safe_cfg(cfg)
                     base = f"""
                         SELECT
-                            d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at,
+                            d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at, d.simhash,
                             ts_rank_cd(d.tsv, to_tsquery(:cfg_0, :tsq)) AS fts_score
                         FROM documents d
                         WHERE d.status = 'indexed' AND ({clauses})
@@ -193,7 +194,7 @@ class LocalIndexProvider(SearchProvider):
                 for config, expr in _FTS_CONFIGS:
                     base = f"""
                         SELECT
-                            d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at,
+                            d.url, d.title, d.content_text, d.published_at, d.source, d.fetched_at, d.simhash,
                             ts_rank_cd({expr}, to_tsquery('{config}', :tsq)) AS fts_score
                         FROM documents d
                         WHERE d.status = 'indexed' AND d.tsv IS NULL
