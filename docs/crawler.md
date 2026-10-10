@@ -49,6 +49,36 @@ indexed https://en.wikipedia.org/wiki/Machine_learning (68 chunks)
 
 After the refresh the document is fresh again, so it won't be re-enqueued until it ages past the threshold.
 
+## Politeness
+
+The worker claims one job at a time with no delay between requests to the same
+host, so a recursive crawl of a documentation site fires requests as fast as the
+network allows. That is how a crawler gets a host to block it — and blocking one
+origin can take out the entire seed.
+
+Every outbound fetch therefore passes a per-origin gate that enforces two
+things:
+
+- `robots.txt`'s **`Crawl-delay`** when the origin declares one, and
+- `CRAWLER_MIN_DELAY_SECONDS` otherwise, so an origin that simply omits the
+  directive is still throttled.
+
+The schedule lives in **Redis**, not in the worker process. Two consequences that
+matter:
+
+- every worker shares one schedule, so N workers do not each apply the delay
+  independently and multiply the effective rate by N;
+- a worker restart cannot reset an origin's window and immediately re-burst
+  against a host that just asked for slower access.
+
+The timestamp is stamped **before** the sleep, not after. Otherwise concurrent
+jobs all read the same stale timestamp and then sleep out the same window in
+parallel, which is exactly the burst the gate exists to prevent.
+
+If Redis is unavailable the gate falls back to an in-process schedule — less
+accurate across workers, but it degrades to "still throttled" rather than to "no
+throttling".
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -57,6 +87,7 @@ After the refresh the document is fresh again, so it won't be re-enqueued until 
 | `CRAWLER_MAX_DEPTH` | `2` | max nested depth from a seed |
 | `CRAWLER_BATCH_SIZE` | `25` | links followed per page |
 | `CRAWLER_FOLLOW_DOMAINS` | `same` | `same` \| `all` \| `none` |
+| `CRAWLER_MIN_DELAY_SECONDS` | `1.0` | floor applied when an origin declares no `Crawl-delay` |
 | `CRAWLER_CONTINUOUS_ENABLED` | `true` | recrawl loop on |
 | `CRAWLER_CONTINUOUS_INTERVAL_SECONDS` | `3600` | recrawl scan interval |
 | `CRAWLER_RECRAWL_AFTER_SECONDS` | `604800` (7d) | re-crawl pages older than this |
