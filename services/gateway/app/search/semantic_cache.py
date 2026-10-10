@@ -142,6 +142,9 @@ class SemanticCache:
                 continue
             if entry.get("s") != sources:
                 continue
+            if int(entry.get("off", 0) or 0) != 0:
+                # Only first-page snapshots are reusable as another caller's page.
+                continue
             score = cosine(embedding, entry.get("e") or [])
             # Track the best overall as well as the usable ones. Reporting only
             # candidates that already clear the threshold means a near-miss
@@ -185,6 +188,9 @@ class SemanticCache:
         cache_key: str,
         sources: str = "all",
         embedding: list[float] | None = None,
+        *,
+        offset: int = 0,
+        num_results: int = 0,
     ) -> None:
         if not self.enabled or not query.strip():
             return
@@ -193,7 +199,20 @@ class SemanticCache:
         if not embedding:
             return
         cache = get_cache()
-        entry = json.dumps({"q": query[:200], "k": cache_key, "e": embedding, "t": time.time(), "s": sources})
+        # Record the page this snapshot covers. Only a first-page snapshot is
+        # reusable for another caller: results[offset:offset+n] on a page that
+        # itself starts at a non-zero offset is not the same slice.
+        entry = json.dumps(
+            {
+                "q": query[:200],
+                "k": cache_key,
+                "e": embedding,
+                "t": time.time(),
+                "s": sources,
+                "off": offset,
+                "n": num_results,
+            }
+        )
         try:
             await cache.rpush(_LIST_KEY, entry)
             await cache.ltrim(_LIST_KEY, -self.max_entries, -1)

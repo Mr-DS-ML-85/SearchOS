@@ -11,14 +11,36 @@ which reads as a miss even though the response was served in ~20ms instead of
 ~2s. `semantic_cache_match` and `semantic_cache_similarity` say which earlier
 query was reused and how close it scored.
 
-The semantic threshold is `SEMANTIC_CACHE_THRESHOLD` (default 0.92), deliberately
-high: a rephrasing that silently resolves to another question's answer is worse
-than a slow one. Measured pairs sit either side of it —
+### Why the threshold is 0.80
 
-    0.9095  tokio rust runtime ~ tokio rust runtime internals explained   (miss)
-    0.9465  ... internals explained ~ explain rust async runtime tokio ... (hit)
+Measured on this corpus with the embedder (`BAAI/bge-small-en-v1.5`):
 
-so a paraphrase missing by 1% is expected behaviour, not a fault.
+| Class | Similarity |
+|---|---|
+| paraphrase — should hit | 0.9477 · 0.9506 · 0.9103 · **0.8625** |
+| related but different — should miss | 0.6891 · 0.6782 · 0.6100 · 0.5628 |
+
+The classes separate cleanly around 0.78. The previous threshold of 0.92 sat
+*above* the paraphrase band and rejected a genuine paraphrase at 0.8625, which is
+why paraphrases appeared to "not work at all".
+
+**Checked and rejected: using the cross-encoder instead.** MiniLM is already
+loaded for reranking, and scoring each candidate pair with it is the obvious way
+to make the decision more precise. Measured, it does the opposite:
+
+| Pair | Embed | Cross-encoder |
+|---|---|---|
+| how to tune postgres autovacuum ~ postgres autovacuum tuning guide | 0.9477 | 5.50 ← lowest of the hits |
+| postgres dead rows cleanup ~ postgres autovacuum tuning guide | 0.6782 | **7.61** ← highest score overall |
+| autovacuum bloat removal settings ~ postgres autovacuum tuning guide | 0.6891 | 6.99 |
+
+ms-marco scores **topical relevance, not question equivalence**. Same topic,
+different question scores highest. Routing the decision through it would invert
+exactly the distinction the cache exists to make.
+
+Set `SEMANTIC_CACHE_THRESHOLD` to retune; the response's
+`semantic_cache_closest_similarity` tells you what a given query scored against
+whatever is currently cached.
 
 `provider_latency_ms` gives wall time per provider, so a slow response can be
 attributed rather than guessed at. It is **empty on a cache hit**: those timings

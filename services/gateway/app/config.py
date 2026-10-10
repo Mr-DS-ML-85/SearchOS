@@ -182,12 +182,23 @@ class Settings(BaseSettings):
     # Empty and low-confidence responses expire fast so a transient miss does
     # not pin itself for the full TTL.
     search_negative_cache_ttl_seconds: int = 30
-    # Reuse a previous answer for a differently-worded but near-identical
-    # query. Deliberately conservative: 0.92 already matches paraphrases and
-    # a higher threshold stops catching them, while 0.85 starts matching
-    # merely-related questions and would answer them with the wrong result.
+    # Reuse a previous answer for a differently-worded but near-identical query.
     semantic_cache_enabled: bool = True
-    semantic_cache_threshold: float = 0.92
+    #: Measured on this corpus with the embedder (BAAI/bge-small-en-v1.5):
+    #:
+    #:     paraphrase, should hit      0.9477  0.9506  0.9103  0.8625
+    #:     related but different       0.6891  0.6782  0.6100  0.5628
+    #
+    #: The classes separate cleanly around 0.78. 0.92 sat above the *paraphrase*
+    #: band and rejected a genuine one at 0.8625, which is why paraphrases appeared
+    #: to "not work".
+    #
+    #: Verified NOT to be a cross-encoder decision instead. ms-marco MiniLM
+    #: scores topical relevance, not question equivalence: "postgres dead rows
+    #: cleanup" ~ "postgres autovacuum tuning guide" scored 7.61 — the highest
+    #: of any pair — while "how to tune postgres autovacuum" ~ the same scored
+    #: 5.50, the lowest of the hits. Using it would invert the decision.
+    semantic_cache_threshold: float = 0.80
     # Comma-separated list of `name=url` peers. A plain string rather than a
     # list because pydantic-settings JSON-decodes list-typed fields from the
     # environment and rejects a comma-separated value outright.

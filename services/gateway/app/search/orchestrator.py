@@ -230,6 +230,20 @@ class SearchOrchestrator:
                 # answer indistinguishable from a miss. cache_type says which.
                 semantic[0]["cache_type"] = "semantic"
                 semantic[0]["provider_latency_ms"] = {}
+                # The stored response was produced for whatever window the
+                # original caller asked for. Replaying it wholesale ignored this
+                # caller's num_results — asking for 5 and receiving 10. The
+                # snapshot always starts at rank 1 (only first-page entries are
+                # eligible for semantic reuse), so it can be re-paged directly.
+                replayed = semantic[0].get("results") or []
+                window = offset + req.num_results
+                page = replayed[offset:window]
+                semantic[0]["results"] = page
+                semantic[0]["returned"] = len(page)
+                semantic[0]["has_more"] = bool(replayed[offset + req.num_results :]) or (len(replayed) > window)
+                semantic[0]["next_cursor"] = (
+                    encode_cursor(window, cursor_fingerprint) if semantic[0]["has_more"] and page else None
+                )
                 # The stored response may itself have been recorded on a *miss*,
                 # carrying that miss's closest_* values. Replaying them beside a
                 # hit is actively misleading: it reads as "matched at 0.82" when
@@ -405,7 +419,9 @@ class SearchOrchestrator:
             await cache.set(cache_key_str, response.model_dump(), ttl_seconds=ttl)
             if results and not weak:
                 try:
-                    await self.semantic_cache.remember(query_text, cache_key_str, req.sources)
+                    await self.semantic_cache.remember(
+                        query_text, cache_key_str, req.sources, offset=offset, num_results=req.num_results
+                    )
                 except Exception:
                     pass
 
