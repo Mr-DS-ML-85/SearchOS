@@ -36,8 +36,19 @@ would issue every live-web request twice. They appear when you pin one with
 `semantic_cache_closest_query` / `semantic_cache_closest_similarity` /
 `semantic_cache_threshold` are reported **even on a miss**, so "the cache did not
 fire" is a measurement rather than a mystery: you can see whether the nearest
-candidate was 0.87 against a 0.92 threshold (a genuine near-miss) or 0.54 (a
-different question entirely).
+*other* query was 0.82 against a 0.92 threshold (a genuine near-miss) or 0.54 (a
+different question entirely). The query's own entry is excluded — it scores 1.0
+and would always win, telling you nothing. These fields are cleared on a hit, so
+they never appear beside `cache_type: semantic` describing a different match.
+
+**Entries expire in ~5.5 minutes, by design.** An entry stores a *reference* to
+a cached response, not the response, so it cannot outlive its target — that was
+the bug where entries outlived their keys by 11x and matched against nothing.
+`SEMANTIC_CACHE_MAX_AGE_SECONDS` (default 330) is clamped to
+`SEARCH_CACHE_TTL_SECONDS + 30`. So paraphrase caching appears to reset between
+sessions spaced more than a few minutes apart; Redis persistence is on
+(`appendonly yes`, RDB + data volume) and is not the cause. To hold entries
+longer, raise both together and accept that results stay serveable longer.
 
 When every provider fails, the error names the reason as well as the provider.
 

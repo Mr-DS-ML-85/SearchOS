@@ -462,7 +462,8 @@ Everything is environment-driven (`.env`). Key variables:
 | `FEDERATED_ENDPOINTS` | — | comma-separated `name=url` peers, e.g. `team-a=http://peer-a:8000` |
 | `FEDERATED_API_KEY` | — | bearer token sent to peers |
 | `DEDUPE_NEAR_DUPLICATES` | `true` | collapse SimHash near-duplicates at query time |
-| `SEMANTIC_CACHE_*` | see `.env.example` | paraphrase-aware query cache |
+| `SEMANTIC_CACHE_MAX_AGE_SECONDS` | `330` | paraphrase-entry lifetime; clamped to the result-cache TTL |
+| `SEMANTIC_CACHE_*` | see `.env.example` | paraphrase-aware query cache; entries live ~330s, clamped to the result-cache TTL |
 | `SEARCH_ENRICH_TOP_N` | `15` | web results queued for full-text enrichment |
 | `SEARCH_CACHE_TTL_SECONDS` | `300` | result cache TTL |
 | `SEARCH_NEGATIVE_CACHE_TTL_SECONDS` | `30` | shorter TTL for empty/low-confidence answers |

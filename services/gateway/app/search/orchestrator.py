@@ -214,6 +214,12 @@ class SearchOrchestrator:
                 # jina, which is worse than reporting nothing: it reads as this
                 # request's behaviour.
                 cached["provider_latency_ms"] = {}
+                for field in (
+                    "semantic_cache_closest_query",
+                    "semantic_cache_closest_similarity",
+                    "semantic_cache_threshold",
+                ):
+                    cached.pop(field, None)
                 return SearchResponse(**cached)
 
             semantic = await self.semantic_cache.lookup(query_text, req.sources)
@@ -224,6 +230,16 @@ class SearchOrchestrator:
                 # answer indistinguishable from a miss. cache_type says which.
                 semantic[0]["cache_type"] = "semantic"
                 semantic[0]["provider_latency_ms"] = {}
+                # The stored response may itself have been recorded on a *miss*,
+                # carrying that miss's closest_* values. Replaying them beside a
+                # hit is actively misleading: it reads as "matched at 0.82" when
+                # the hit matched at or above the threshold.
+                for field in (
+                    "semantic_cache_closest_query",
+                    "semantic_cache_closest_similarity",
+                    "semantic_cache_threshold",
+                ):
+                    semantic[0].pop(field, None)
                 return SearchResponse(**semantic[0])
 
             # Miss. The lookup already computed the nearest candidate and its

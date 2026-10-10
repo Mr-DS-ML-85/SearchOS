@@ -55,10 +55,14 @@ def _entry_ttl_seconds() -> float:
     """Lifetime of a semantic entry, capped by the lifetime of its target."""
     from app.config import get_settings
 
-    ttl = float(get_settings().search_cache_ttl_seconds)
+    settings = get_settings()
+    configured = float(settings.semantic_cache_max_age_seconds)
+    ttl = float(settings.search_cache_ttl_seconds)
     # Never exceed the target's lifetime, with a little slack so an entry is not
-    # evicted microseconds before the response it refers to.
-    return min(_FRESH_SECONDS, ttl + 30)
+    # evicted microseconds before the response it refers to. Raising this past
+    # the result TTL re-creates the "entry matches but its target is gone" bug,
+    # so it is clamped rather than trusted.
+    return min(_FRESH_SECONDS, ttl + 30, configured)
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -143,6 +147,12 @@ class SemanticCache:
             # candidates that already clear the threshold means a near-miss
             # below it is discarded, which is exactly the case someone tuning the
             # threshold needs to see.
+            # For the miss report, the nearest *other* query is what helps. The
+            # query's own entry scores 1.0 and would otherwise always win,
+            # which tells the caller nothing about whether a paraphrase would
+            # have matched.
+            if entry.get("q") == query:
+                continue
             if score > best_any_score:
                 best_any_score = score
                 best_any_query = entry.get("q")

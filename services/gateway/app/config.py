@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     images_enabled: bool = True
     # ColBERT late interaction. Off by default: it costs ~64KB per chunk on top
     # of the chunk embedding, and most queries do not need token-level matching.
+    # How long a semantic-cache entry may match. Bounded by the result cache
+    # because an entry stores a *reference* to a cached response, not the
+    # response itself — an entry outliving its target is a guaranteed miss.
+    # 330s follows the 300s result TTL, which is why paraphrase caching appears
+    # to "reset between sessions" a few minutes apart. Raise it together with
+    # SEARCH_CACHE_TTL_SECONDS, accepting that results stay serveable longer.
+    semantic_cache_max_age_seconds: int = 330
     colbert_enabled: bool = False
     colbert_model: str = "colbert-ir/colbertv2.0"
     # Chunks above this candidate count are not rescored. MaxSim is O(query x
