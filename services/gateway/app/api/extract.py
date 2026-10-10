@@ -90,6 +90,7 @@ async def extract(
         took_ms=int((time.monotonic() - start) * 1000),
         format=req.format,
         metadata=metadata,
+        fetched_via=page.via,
     )
 
     await cache.set(key, response.model_dump(), ttl_seconds=settings.extract_cache_ttl_seconds)
@@ -100,7 +101,9 @@ async def extract(
     except Exception:
         pass
     get_metrics().extract_total.labels(status="ok").inc()
-    get_metrics().extract_duration.observe((time.monotonic() - start) / 1000)
+    # monotonic() is already in seconds; dividing by 1000 recorded every
+    # extraction as 1000x faster than it was.
+    get_metrics().extract_duration.observe(time.monotonic() - start)
     background_tasks.add_task(
         get_security_service().log_usage, api_key, "extract", 200, int((time.monotonic() - start) * 1000)
     )

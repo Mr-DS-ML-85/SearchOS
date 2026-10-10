@@ -183,6 +183,7 @@ services:
       PROXIFY_BROWSER: ${PROXIFY_BROWSER:-gui_chrome}
       PROXIFY_TIMEOUT_SECONDS: ${PROXIFY_TIMEOUT_SECONDS:-45}
       GOOGLE_CASCADE_POSITION: ${GOOGLE_CASCADE_POSITION:-after_searxng}
+      PROXIFY_FETCH_FALLBACK: ${PROXIFY_FETCH_FALLBACK:-true}
       SEARCH_CASCADE_ENABLED: ${SEARCH_CASCADE_ENABLED:-true}
       SEARCH_CASCADE_COOLDOWN_SECONDS: ${SEARCH_CASCADE_COOLDOWN_SECONDS:-30}
       # Comma-separated `name=url` peers queried alongside this instance.
@@ -257,6 +258,10 @@ services:
       WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9101}
       # The gateway is the single migration owner; see worker_entrypoint.py.
       WORKER_RUN_MIGRATIONS: ${WORKER_RUN_MIGRATIONS:-false}
+      # Crawls and snippet enrichment use the same fetcher as /v1/extract, so
+      # the Proxify fallback applies here too (docker-compose.proxify.yml).
+      PROXIFY_URL: ${PROXIFY_URL:-}
+      PROXIFY_FETCH_FALLBACK: ${PROXIFY_FETCH_FALLBACK:-true}
     expose:
       - "${WORKER_METRICS_PORT:-9101}"
     # The image's HEALTHCHECK probes :8000/health/live, which only the gateway

@@ -235,6 +235,7 @@ class ExtractResponse(BaseModel):
     truncated: bool = False
     took_ms: int
     format: str = Field("text", description="Format `content` is rendered in")
+    fetched_via: str = Field("native", description="'native' (renderer or direct GET) or 'proxify' (fallback)")
     #: Only populated for format='json': structured page metadata.
     metadata: dict[str, Any] | None = None
 

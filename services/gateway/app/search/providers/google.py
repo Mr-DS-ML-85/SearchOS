@@ -35,7 +35,11 @@ _TIME_RANGE = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y
 
 
 class ProxifyError(Exception):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        #: The target's HTTP status when Proxify reached it, so a caller can
+        #: tell "the page is gone" (404) from "Proxify could not get through".
+        self.status_code = status_code
 
 
 class ProxifyClient:
@@ -43,7 +47,15 @@ class ProxifyClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    async def fetch(self, url: str, *, browser: str, timeout: float | None = None, wait_selector: str | None = None):
+    async def fetch(
+        self,
+        url: str,
+        *,
+        browser: str | None = None,
+        timeout: float | None = None,
+        wait_selector: str | None = None,
+        raw: bool = False,
+    ):
         """POST /fetch. Returns the response dict, or raises ProxifyError.
 
         Proxify sets ``success: false`` for 4xx/5xx and for block or captcha
@@ -54,10 +66,15 @@ class ProxifyClient:
         budget = timeout or self.timeout
         body = {
             "url": url,
-            "browser": browser,
             "timeout": budget,
             "headers": dict(NO_CAPTCHA_SOLVE),
         }
+        # None lets Proxify pick and escalate strategies itself.
+        if browser:
+            body["browser"] = browser
+        if raw:
+            # Bytes in body_b64 and no DOM cleaning: the caller extracts.
+            body["raw"] = True
         if wait_selector:
             body["wait_selector"] = wait_selector
         try:
@@ -72,7 +89,7 @@ class ProxifyClient:
             raise ProxifyError(f"proxify returned non-JSON (HTTP {resp.status_code})") from e
         if resp.status_code >= 400 or not data.get("success"):
             reason = data.get("error") or data.get("detail") or f"HTTP {resp.status_code}"
-            raise ProxifyError(f"proxify: {reason}")
+            raise ProxifyError(f"proxify: {reason}", status_code=data.get("status_code"))
         return data
 
 

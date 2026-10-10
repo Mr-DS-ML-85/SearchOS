@@ -123,6 +123,14 @@ class Settings(BaseSettings):
     # Where Google sits in the web cascade: "after_searxng" (fallback) or
     # "first". It costs ~12s, so it is a fallback unless asked otherwise.
     google_cascade_position: str = "after_searxng"
+    # When the native fetch (renderer, then plain GET) fails with something a
+    # different client could get past — 403/429/5xx, a timeout, an anti-bot
+    # challenge page — retry once through Proxify. Never for 404, robots.txt,
+    # egress-policy refusals or oversize pages: those are answers, not failures.
+    proxify_fetch_fallback: bool = True
+    # Empty lets Proxify choose and escalate strategies itself.
+    proxify_fetch_browser: str = ""
+    proxify_fetch_timeout_seconds: float = 45.0
     # After the whole chain fails, refuse live attempts for this long and serve
     # the degraded local result instead. Without it every request pays the full
     # timeout of every dead tier.

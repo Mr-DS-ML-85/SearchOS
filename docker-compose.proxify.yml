@@ -1,4 +1,4 @@
-# Opt-in overlay: Google web + image search through a Proxify gateway
+# Opt-in overlay: Google web + image search, and fetch fallback, through a Proxify gateway
 # (github.com/Mr-DS-ML-85/proxify) running as its own compose project.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.proxify.yml up -d
@@ -7,6 +7,12 @@
 # its API port. Proxify must already be running: the network is external.
 services:
   gateway:
+    environment:
+      PROXIFY_URL: ${PROXIFY_URL:-http://proxy-orchestrator:8081}
+    networks:
+      - proxify
+  # The worker crawls through the same fetcher, so it needs the fallback too.
+  worker:
     environment:
       PROXIFY_URL: ${PROXIFY_URL:-http://proxy-orchestrator:8081}
     networks:
