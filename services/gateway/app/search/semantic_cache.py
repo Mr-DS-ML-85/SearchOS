@@ -126,6 +126,8 @@ class SemanticCache:
         # (often 1.0 for the query's own text), fail to load, and turn the whole
         # lookup into a miss. That is what made the cache fire intermittently.
         candidates: list[tuple[float, str | None, str]] = []
+        best_any_query: str | None = None
+        best_any_score = 0.0
         for blob in raw:
             try:
                 entry = json.loads(blob)
@@ -137,18 +139,23 @@ class SemanticCache:
             if entry.get("s") != sources:
                 continue
             score = cosine(embedding, entry.get("e") or [])
+            # Track the best overall as well as the usable ones. Reporting only
+            # candidates that already clear the threshold means a near-miss
+            # below it is discarded, which is exactly the case someone tuning the
+            # threshold needs to see.
+            if score > best_any_score:
+                best_any_score = score
+                best_any_query = entry.get("q")
             if score >= self.threshold:
                 candidates.append((score, entry.get("q"), entry.get("k")))
 
         candidates.sort(key=lambda item: item[0], reverse=True)
-        best_query = candidates[0][1] if candidates else None
-        best_score = candidates[0][0] if candidates else 0.0
 
         if not candidates:
-            # Report the nearest candidate even though it is unusable, so a miss
-            # can be explained ("closest was 0.87, threshold is 0.92") rather
-            # than looking like the cache did not run.
-            return None, best_query, best_score
+            # Nothing usable. Report how close the nearest entry came so the
+            # caller can tell a near-miss (0.89 against 0.92) from a different
+            # question entirely (0.54).
+            return None, best_any_query, best_any_score
 
         # Walk down the ranked list until one entry's response is still cached.
         for score, matched_query, key in candidates:
@@ -160,13 +167,7 @@ class SemanticCache:
                 get_metrics().semantic_cache_hits.inc()
                 return stored, matched_query, score
         # Every match above threshold pointed at an evicted response.
-        return None, best_query, best_score
-
-        stored["semantic_cache_hit"] = True
-        stored["semantic_cache_match"] = best_query
-        stored["semantic_cache_similarity"] = round(best_score, 4)
-        get_metrics().semantic_cache_hits.inc()
-        return stored, best_query, best_score
+        return None, candidates[0][1] if candidates else None, (candidates[0][0] if candidates else 0.0)
 
     async def remember(
         self,

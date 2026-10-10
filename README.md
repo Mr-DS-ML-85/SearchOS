@@ -245,7 +245,7 @@ If the cross-encoder cannot load, the heuristic reranker is used instead and **t
 | SearXNG | — | primary |
 | Tavily | **none** | documented keyless mode: `X-Tavily-Access-Mode: keyless`, identical response schema; fair-use capped per IP |
 | Exa | **none** | hosted MCP at `mcp.exa.ai`; its REST API returns 402 without a funded key |
-| Jina | key | `s.jina.ai` returns 401 without one |
+| Jina | key | `s.jina.ai` returns 401 without one; measured ~6s, so budget 5s — it is the last tier |
 
 A tier that answers with **zero results** does not stop the chain — it counts as a miss, because an empty SERP usually means an upstream rate limit rather than genuine absence of results. When every tier fails the chain opens a cooldown and returns immediately; one success clears it.
 

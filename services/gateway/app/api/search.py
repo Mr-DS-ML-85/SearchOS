@@ -52,6 +52,8 @@ def build_orchestrator():
             searxng = SearXNGProvider(get_session_factory(), settings.searxng_url, settings.searxng_timeout_seconds)
             orchestrator.providers["web"] = searxng
             orchestrator.providers["searxng"] = searxng
+            # Same object under two names; "all" must not query it twice.
+            orchestrator.cascade_members = {"searxng"}
 
         # Also register each tier on its own name so sources=tavily / exa /
         # jina / searxng can pin one upstream. Without this those values were
@@ -59,6 +61,15 @@ def build_orchestrator():
         # was dead, misconfigured, or simply never reached.
         for tier in getattr(cascade, "tiers", []):
             orchestrator.providers.setdefault(tier.name, tier)
+        # Record which providers the cascade already covers. `sources=all` must
+        # not also fan out to each tier individually: the cascade queries
+        # searxng, tavily, exa and jina in turn, so "all" was issuing every web
+        # request twice — once inside the chain and once beside it. It showed up
+        # as `web` at ~6s next to `searxng` at ~3.2s for the same query.
+        #
+        # The individual names stay registered so `sources=tavily` can still pin
+        # one upstream; only the default fan-out changes.
+        orchestrator.cascade_members = {tier.name for tier in getattr(cascade, "tiers", [])}
     if settings.federated_peers:
         from app.search.providers.federated import build_federated
 

@@ -21,7 +21,14 @@ than a slow one. Measured pairs sit either side of it —
 so a paraphrase missing by 1% is expected behaviour, not a fault.
 
 `provider_latency_ms` gives wall time per provider, so a slow response can be
-attributed rather than guessed at. Measured on one `sources=all` query:
+attributed rather than guessed at. It is **empty on a cache hit**: those timings
+belonged to the request that did the work, and replaying them made a 9ms response
+appear to have spent 6s in a provider.
+
+On `sources=all` the per-tier names (`searxng`, `tavily`, `exa`, `jina`) are
+absent, because `web` is the cascade that already queries them — including them
+would issue every live-web request twice. They appear when you pin one with
+`sources=tavily`. Measured on one `sources=all` query:
 
     local 27ms · vector 41ms · tavily 1456ms (degraded) · searxng 1740ms
     web 3237ms · exa 3372ms · jina 5217ms · federated 5542ms

@@ -103,7 +103,12 @@ class Settings(BaseSettings):
     exa_advanced: bool = False
     exa_timeout_seconds: float = 6.0
     jina_api_key: str = ""
-    jina_timeout_seconds: float = 8.0
+    # Jina is the last tier of the cascade, reached only when searxng, tavily
+    # and exa have all failed. It measured ~6s to answer, so an 8s budget let it
+    # consume most of the request's wall time in exchange for a tier that
+    # usually never runs. 5s keeps it useful — it does answer — while bounding
+    # the worst case; the cascade still returns whatever earlier tiers produced.
+    jina_timeout_seconds: float = 5.0
     # After the whole chain fails, refuse live attempts for this long and serve
     # the degraded local result instead. Without it every request pays the full
     # timeout of every dead tier.

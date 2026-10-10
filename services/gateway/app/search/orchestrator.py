@@ -128,7 +128,10 @@ class SearchOrchestrator:
 
     def select_providers(self, sources: str) -> list[SearchProvider]:
         if sources == "all":
-            return list(self.providers.values())
+            # Everything except the tiers the `web` cascade already queries.
+            # Including them would double every live-web request.
+            members = getattr(self, "cascade_members", set())
+            return [p for name, p in self.providers.items() if name not in members]
         provider = self.providers.get(sources)
         return [provider] if provider else []
 
@@ -206,6 +209,11 @@ class SearchOrchestrator:
                 cached["query"] = req.q
                 # A cache hit must not report the latency of the original fetch.
                 cached["took_ms"] = int((time.monotonic() - start) * 1000)
+                # Per-provider timings belonged to the request that did the work.
+                # Replaying them made a 9ms response appear to have spent 6s in
+                # jina, which is worse than reporting nothing: it reads as this
+                # request's behaviour.
+                cached["provider_latency_ms"] = {}
                 return SearchResponse(**cached)
 
             semantic = await self.semantic_cache.lookup(query_text, req.sources)
@@ -215,6 +223,7 @@ class SearchOrchestrator:
                 # cache_hit stays False for a semantic match, which made a served
                 # answer indistinguishable from a miss. cache_type says which.
                 semantic[0]["cache_type"] = "semantic"
+                semantic[0]["provider_latency_ms"] = {}
                 return SearchResponse(**semantic[0])
 
             # Miss. The lookup already computed the nearest candidate and its

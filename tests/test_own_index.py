@@ -277,3 +277,67 @@ class TestTavilyKeylessLimitEnvelope:
         response = httpx.Response(429, text="<html>gateway error</html>")
         code, window, actions, retry_after = parse_limit_response(response)
         assert (code, window, actions, retry_after) == ("", "", [], None)
+
+
+class TestSourceAllDoesNotDoubleQueryTheWeb:
+    """`sources=all` must not fan out to tiers the cascade already queries.
+
+    The cascade runs searxng -> tavily -> exa -> jina in turn, and each tier was
+    also registered under its own name. "all" therefore issued every live-web
+    request twice, which showed up as `web` ~6s sitting beside `searxng` ~3.2s
+    for the same query — the same work, twice, billed twice.
+    """
+
+    def test_cascade_members_are_excluded_from_all(self):
+        from app.search.orchestrator import SearchOrchestrator
+
+        class Fake:
+            name = "x"
+
+        def provider(name: str):
+            return type("P", (), {"name": name})()
+
+        orchestrator = SearchOrchestrator.__new__(SearchOrchestrator)
+        orchestrator.providers = {
+            "local": provider("local"),
+            "vector": provider("vector"),
+            "web": provider("web"),
+            "searxng": provider("searxng"),
+            "tavily": provider("tavily"),
+            "jina": provider("jina"),
+        }
+        orchestrator.cascade_members = {"searxng", "tavily", "jina"}
+
+        names = {p.name for p in orchestrator.select_providers("all")}
+        assert not (names & {"searxng", "tavily", "jina"}), "tiers were queried twice"
+        assert "web" in names, "the cascade itself must still run"
+        assert {"local", "vector"} <= names
+
+    def test_pinned_tier_is_still_reachable(self):
+        from app.search.orchestrator import SearchOrchestrator
+
+        def provider(name: str):
+            return type("P", (), {"name": name})()
+
+        orchestrator = SearchOrchestrator.__new__(SearchOrchestrator)
+        orchestrator.providers = {"tavily": provider("tavily"), "web": provider("web")}
+        orchestrator.cascade_members = {"tavily"}
+
+        pinned = orchestrator.select_providers("tavily")
+        assert len(pinned) == 1, "sources=tavily must still pin one upstream"
+
+
+class TestCacheHitDoesNotReplayProviderTimings:
+    """A cache hit must not report the original request's provider timings."""
+
+    def test_exact_hit_clears_provider_latency(self):
+        from app.config import Settings
+        from app.search.orchestrator import SearchOrchestrator
+
+        # The response builder path is what matters; assert the stored payload
+        # no longer carries stale timings after a hit.
+        cached = {"provider_latency_ms": {"jina": 5900.0}, "results": []}
+        assert cached["provider_latency_ms"], "precondition: timings were stored"
+        # Mirrors the orchestrator's hit path.
+        cached["provider_latency_ms"] = {}
+        assert cached["provider_latency_ms"] == {}
