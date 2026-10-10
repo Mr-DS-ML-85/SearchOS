@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
+import httpx
+
 from app.config import get_settings
 from app.logging import get_logger
 from app.metrics import get_metrics
@@ -34,7 +36,6 @@ class TavilyProvider(SearchProvider):
         self.keyless = keyless
 
     async def search(self, query: ProviderQuery) -> ProviderResult:
-        import httpx
 
         start = time.monotonic()
         result = ProviderResult(provider=self.name, query=query.q)
@@ -76,6 +77,20 @@ class TavilyProvider(SearchProvider):
                 resp = await client.post(_TAVILY_ENDPOINT, json=body, headers=headers)
                 resp.raise_for_status()
                 payload = resp.json()
+        except httpx.HTTPStatusError as e:
+            get_metrics().provider_errors.labels(provider=self.name, kind="http").inc()
+            status = e.response.status_code
+            if status == 429:
+                # Keyless access is shared and rate-limited per IP. Saying "429"
+                # sends the operator looking at their own configuration, when the
+                # cause is upstream capacity.
+                result.error = "tavily: HTTP 429 rate limited" + (
+                    " (keyless tier — set TAVILY_API_KEY for a dedicated quota)" if not self.api_key else ""
+                )
+            else:
+                result.error = f"tavily: HTTP {status}"
+            result.latency_ms = (time.monotonic() - start) * 1000
+            return result
         except Exception as e:
             get_metrics().provider_errors.labels(provider=self.name, kind="http").inc()
             result.error = f"tavily error: {e.__class__.__name__}: {e}"

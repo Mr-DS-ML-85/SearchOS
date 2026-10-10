@@ -185,6 +185,7 @@ class SearchOrchestrator:
             colbert_on,
         )
 
+        near_miss: dict = {}
         if req.cache:
             # Exact match first, semantic second. The semantic lookup matches an
             # identical query at 1.0, so checking it first meant a plain repeat
@@ -216,6 +217,19 @@ class SearchOrchestrator:
                 semantic[0]["cache_type"] = "semantic"
                 return SearchResponse(**semantic[0])
 
+            # Miss. The lookup already computed the nearest candidate and its
+            # similarity; reporting it turns "the cache did not fire" from a
+            # mystery into a measurement.
+            near_query, near_score = semantic[1], semantic[2]
+            if near_query:
+                near_miss = {
+                    "semantic_cache_closest_query": near_query,
+                    "semantic_cache_closest_similarity": round(near_score, 4),
+                    "semantic_cache_threshold": self.semantic_cache.threshold,
+                }
+            else:
+                near_miss = {}
+
             metrics.cache_misses.inc()
         providers = self.select_providers(req.sources)
         if not providers:
@@ -244,13 +258,23 @@ class SearchOrchestrator:
 
         by_provider: dict[str, list[SearchResult]] = {}
         degraded: list[str] = []
+        # Per-provider wall time. A 9s response with no explanation is not
+        # actionable; "jina 8.1s, everything else under 400ms" points straight at
+        # the slow tier. Previously this only reached Prometheus, so the caller
+        # could see a slow query but not why.
+        provider_latency: dict[str, float] = {}
+        provider_errors: dict[str, str] = {}
         for provider, outcome in zip(providers, provider_results, strict=True):
             if isinstance(outcome, BaseException):
                 degraded.append(provider.name)
+                provider_errors[provider.name] = f"{outcome.__class__.__name__}: {outcome}"
+                provider_latency[provider.name] = round((time.monotonic() - start) * 1000)
                 metrics.provider_errors.labels(provider=provider.name, kind="exception").inc()
                 continue
+            provider_latency[provider.name] = round(outcome.latency_ms)
             if outcome.error:
                 degraded.append(provider.name)
+                provider_errors[provider.name] = outcome.error
             else:
                 metrics.upstream_latency.labels(provider=provider.name).observe(outcome.latency_ms / 1000)
             by_provider[provider.name] = outcome.results
@@ -261,7 +285,13 @@ class SearchOrchestrator:
         if degraded and not any(by_provider.values()):
             from app.errors import ProviderError
 
-            raise ProviderError(f"All search providers failed: {', '.join(sorted(degraded))}")
+            # Name the reason, not just the provider. "All search providers
+            # failed: tavily" is unactionable — it reads as a SearchOS problem
+            # when the actual cause might be an upstream rate limit.
+            detail = "; ".join(f"{name}: {reason}" for name, reason in sorted(provider_errors.items()))
+            raise ProviderError(
+                f"All search providers failed: {', '.join(sorted(degraded))}" + (f" ({detail})" if detail else "")
+            )
 
         fused = reciprocal_rank_fusion(by_provider)
         # Total matches are known before the reranker truncates anything.
@@ -317,6 +347,9 @@ class SearchOrchestrator:
         has_more = offset + len(results) < total
 
         response = SearchResponse(
+            # Near-miss diagnostics travel with a miss so the caller can see how
+            # close the cache came instead of only learning that it did not fire.
+            **near_miss,
             query=req.q,
             results=results,
             total=total,
@@ -326,6 +359,7 @@ class SearchOrchestrator:
             cache_hit=False,
             degraded=degraded,
             providers=sorted(by_provider.keys()),
+            provider_latency_ms=provider_latency,
             top_score=results[0].score if results else None,
             low_confidence=low_confidence,
             min_score=min_score if ranked else None,

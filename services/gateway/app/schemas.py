@@ -121,6 +121,14 @@ class SearchResponse(BaseModel):
             "which reads as a miss."
         ),
     )
+    provider_latency_ms: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Wall time per provider for this query. Present so a slow response can be "
+            "attributed to a tier instead of guessed at. Only meaningful on a miss — a "
+            "cache hit replays the original request's timings."
+        ),
+    )
     degraded: list[str]
     providers: list[str]
     top_score: float | None = Field(
@@ -152,6 +160,21 @@ class SearchResponse(BaseModel):
         description="The earlier query whose result was reused, when semantic_cache_hit is true",
     )
     semantic_cache_similarity: float | None = Field(None, description="Cosine similarity of the reuse")
+    #: Reported even when the cache missed, so "why did this paraphrase not
+    #: hit?" is answerable from the response instead of requiring log access.
+    semantic_cache_closest_query: str | None = Field(
+        default=None,
+        description="Nearest cached query considered, whether or not it was close enough to use",
+    )
+    semantic_cache_closest_similarity: float | None = Field(
+        default=None,
+        description=(
+            "Similarity to that nearest query. Compare with the configured threshold to tell a miss from a near-miss."
+        ),
+    )
+    semantic_cache_threshold: float | None = Field(
+        default=None, description="Threshold the nearest candidate was measured against"
+    )
     operators_applied: dict[str, Any] | None = Field(
         None,
         description="Operators parsed out of `q` (site/filetype/phrase/negation), or null.",

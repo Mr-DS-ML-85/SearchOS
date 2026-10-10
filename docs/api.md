@@ -20,6 +20,22 @@ than a slow one. Measured pairs sit either side of it —
 
 so a paraphrase missing by 1% is expected behaviour, not a fault.
 
+`provider_latency_ms` gives wall time per provider, so a slow response can be
+attributed rather than guessed at. Measured on one `sources=all` query:
+
+    local 27ms · vector 41ms · tavily 1456ms (degraded) · searxng 1740ms
+    web 3237ms · exa 3372ms · jina 5217ms · federated 5542ms
+
+`semantic_cache_closest_query` / `semantic_cache_closest_similarity` /
+`semantic_cache_threshold` are reported **even on a miss**, so "the cache did not
+fire" is a measurement rather than a mystery: you can see whether the nearest
+candidate was 0.87 against a 0.92 threshold (a genuine near-miss) or 0.54 (a
+different question entirely).
+
+When every provider fails, the error names the reason as well as the provider —
+`tavily: HTTP 429 rate limited (keyless tier — set TAVILY_API_KEY for a
+dedicated quota)` rather than a bare "All search providers failed".
+
 `colbert` forces late-interaction reranking on or off for a single query,
 overriding the server default, so the reranker can be A/B'd from a client. It is
 part of both cache identities: a ColBERT-ordered answer is a different answer to

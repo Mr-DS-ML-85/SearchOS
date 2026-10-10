@@ -37,9 +37,28 @@ _LIST_KEY = "semcache:recent"
 # Each entry is a JSON blob with a 384-float vector, so cap the list rather than
 # let it grow without bound in a long-lived Redis.
 _MAX_ENTRIES = 500
+
+
 # Only consider entries answered recently; the exact-match TTL is the outer
 # bound, this is the inner one.
+#: Entries must not outlive the response they point at. The semantic list
+#: stores a reference (the cache key), not the response itself, and the response
+#: expires at `search_cache_ttl_seconds` (300s by default). With a 3600s entry
+#: TTL, an entry stayed "matchable" for ~3300s after its target was gone: the
+#: lookup found a strong match, failed to fetch it, and returned a miss — so the
+#: cache fired intermittently and for no visible reason, depending purely on
+#: whether the underlying key happened to still be warm.
 _FRESH_SECONDS = 3600
+
+
+def _entry_ttl_seconds() -> float:
+    """Lifetime of a semantic entry, capped by the lifetime of its target."""
+    from app.config import get_settings
+
+    ttl = float(get_settings().search_cache_ttl_seconds)
+    # Never exceed the target's lifetime, with a little slack so an entry is not
+    # evicted microseconds before the response it refers to.
+    return min(_FRESH_SECONDS, ttl + 30)
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -101,30 +120,47 @@ class SemanticCache:
             return None, None, 0.0
 
         now = time.time()
-        best_key: str | None = None
-        best_query: str | None = None
-        best_score = 0.0
+        # Rank every candidate first rather than picking a winner immediately.
+        # A stale entry — one whose response key has since been flushed or
+        # expired — used to shadow a perfectly good match: it would score higher
+        # (often 1.0 for the query's own text), fail to load, and turn the whole
+        # lookup into a miss. That is what made the cache fire intermittently.
+        candidates: list[tuple[float, str | None, str]] = []
         for blob in raw:
             try:
                 entry = json.loads(blob)
             except (TypeError, ValueError):
                 continue
-            if now - float(entry.get("t", 0)) > _FRESH_SECONDS:
+            if now - float(entry.get("t", 0)) > _entry_ttl_seconds():
+                # Stale: its target response is almost certainly gone too.
                 continue
             if entry.get("s") != sources:
                 continue
             score = cosine(embedding, entry.get("e") or [])
-            if score > best_score:
-                best_key = entry.get("k")
-                best_query = entry.get("q")
-                best_score = score
+            if score >= self.threshold:
+                candidates.append((score, entry.get("q"), entry.get("k")))
 
-        if not best_key or best_score < self.threshold:
-            return None, None, best_score
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        best_query = candidates[0][1] if candidates else None
+        best_score = candidates[0][0] if candidates else 0.0
 
-        stored = await cache.get(best_key)
-        if not stored:
-            return None, None, best_score
+        if not candidates:
+            # Report the nearest candidate even though it is unusable, so a miss
+            # can be explained ("closest was 0.87, threshold is 0.92") rather
+            # than looking like the cache did not run.
+            return None, best_query, best_score
+
+        # Walk down the ranked list until one entry's response is still cached.
+        for score, matched_query, key in candidates:
+            stored = await cache.get(key)
+            if stored:
+                stored["semantic_cache_hit"] = True
+                stored["semantic_cache_match"] = matched_query
+                stored["semantic_cache_similarity"] = round(score, 4)
+                get_metrics().semantic_cache_hits.inc()
+                return stored, matched_query, score
+        # Every match above threshold pointed at an evicted response.
+        return None, best_query, best_score
 
         stored["semantic_cache_hit"] = True
         stored["semantic_cache_match"] = best_query
@@ -150,6 +186,6 @@ class SemanticCache:
         try:
             await cache.rpush(_LIST_KEY, entry)
             await cache.ltrim(_LIST_KEY, -self.max_entries, -1)
-            await cache.expire(_LIST_KEY, _FRESH_SECONDS)
+            await cache.expire(_LIST_KEY, int(_entry_ttl_seconds()))
         except Exception:
             pass
