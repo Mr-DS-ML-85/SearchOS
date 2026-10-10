@@ -230,6 +230,7 @@ class SearchOrchestrator:
                 # answer indistinguishable from a miss. cache_type says which.
                 semantic[0]["cache_type"] = "semantic"
                 semantic[0]["provider_latency_ms"] = {}
+                semantic[0]["semantic_cache_miss_reason"] = None
                 # The stored response was produced for whatever window the
                 # original caller asked for. Replaying it wholesale ignored this
                 # caller's num_results — asking for 5 and receiving 10. The
@@ -259,15 +260,16 @@ class SearchOrchestrator:
             # Miss. The lookup already computed the nearest candidate and its
             # similarity; reporting it turns "the cache did not fire" from a
             # mystery into a measurement.
-            near_query, near_score = semantic[1], semantic[2]
+            near_query, near_score, near_reason = semantic[1], semantic[2], semantic[3]
+            near_miss = {"semantic_cache_miss_reason": near_reason}
             if near_query:
-                near_miss = {
-                    "semantic_cache_closest_query": near_query,
-                    "semantic_cache_closest_similarity": round(near_score, 4),
-                    "semantic_cache_threshold": self.semantic_cache.threshold,
-                }
-            else:
-                near_miss = {}
+                near_miss.update(
+                    {
+                        "semantic_cache_closest_query": near_query,
+                        "semantic_cache_closest_similarity": round(near_score, 4),
+                        "semantic_cache_threshold": self.semantic_cache.threshold,
+                    }
+                )
 
             metrics.cache_misses.inc()
         providers = self.select_providers(req.sources)
@@ -314,6 +316,16 @@ class SearchOrchestrator:
             if outcome.error:
                 degraded.append(provider.name)
                 provider_errors[provider.name] = outcome.error
+            # The cascade reports as one unit, so a tier that failed inside it
+            # was invisible unless you pinned it. `degraded` now names the tier,
+            # not just "web".
+            degraded_tiers = (outcome.raw or {}).get("degraded_tiers") or []
+            for entry in degraded_tiers:
+                tier_name = str(entry).split(":", 1)[0].strip()
+                if tier_name and tier_name not in degraded:
+                    degraded.append(tier_name)
+                    provider_errors[tier_name] = str(entry)
+                    provider_latency.setdefault(tier_name, 0.0)
             else:
                 metrics.upstream_latency.labels(provider=provider.name).observe(outcome.latency_ms / 1000)
             by_provider[provider.name] = outcome.results

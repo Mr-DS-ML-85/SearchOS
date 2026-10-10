@@ -175,6 +175,23 @@ class SearchResponse(BaseModel):
     semantic_cache_threshold: float | None = Field(
         default=None, description="Threshold the nearest candidate was measured against"
     )
+    semantic_cache_miss_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why a semantic lookup returned nothing: 'below_threshold' (nothing "
+            "close enough), 'target_expired' (matched, but the cached response it "
+            "points at was evicted), 'empty' (no entries), 'no_embedding', "
+            "'disabled', or 'store_unavailable'. Without this a miss reporting a "
+            "similarity above the threshold looks like a contradiction."
+        ),
+    )
+    semantic_cache_runner_up_query: str | None = Field(
+        default=None,
+        description="Closest candidate considered but not used, on a hit",
+    )
+    semantic_cache_runner_up_similarity: float | None = Field(
+        default=None, description="Its similarity, for judging the margin of the match"
+    )
     operators_applied: dict[str, Any] | None = Field(
         None,
         description="Operators parsed out of `q` (site/filetype/phrase/negation), or null.",

@@ -38,17 +38,47 @@ ms-marco scores **topical relevance, not question equivalence**. Same topic,
 different question scores highest. Routing the decision through it would invert
 exactly the distinction the cache exists to make.
 
-Set `SEMANTIC_CACHE_THRESHOLD` to retune; the response's
-`semantic_cache_closest_similarity` tells you what a given query scored against
-whatever is currently cached.
+### Reading a miss that reports a similarity *above* the threshold
+
+That is not a contradiction, and `semantic_cache_miss_reason` says which case it
+is:
+
+| `semantic_cache_miss_reason` | Meaning |
+|---|---|
+| `below_threshold` | nothing in the cache was close enough |
+| `target_expired` | it **did** match, but the cached response it pointed at was evicted |
+| `empty` | no entries at all |
+| `no_embedding` / `disabled` / `store_unavailable` | the cache could not run |
+
+`target_expired` is the one worth knowing about: the entry stores a *reference*
+to a cached response, so it can match and still fail to be served. Reproduced
+deliberately by flushing the result cache while leaving the semantic list:
+
+    cache_type=none closest_sim=0.9523 thr=0.8 reason=target_expired
+
+On a **hit**, `semantic_cache_match` is the query that was reused,
+`semantic_cache_similarity` how close it scored, and
+`semantic_cache_runner_up_query` / `_similarity` the closest candidate that was
+*not* used — so the margin is visible without a second request:
+
+    cache_type=semantic sim=0.9523
+    runner_up='overview of the tokio runtime in rust' sim=0.8644
+
+Set `SEMANTIC_CACHE_THRESHOLD` to retune; `semantic_cache_closest_similarity`
+tells you what a given query scored against whatever is currently cached.
 
 `provider_latency_ms` gives wall time per provider, so a slow response can be
 attributed rather than guessed at. It is **empty on a cache hit**: those timings
 belonged to the request that did the work, and replaying them made a 9ms response
 appear to have spent 6s in a provider.
 
+A tier that fails *inside* the cascade is now named in `degraded` and given its
+own `provider_latency_ms` entry, rather than being hidden behind "web". Pinning a
+tier (`sources=tavily`) still returns the full error rather than falling back,
+which remains the way to see exactly why one upstream failed.
+
 On `sources=all` the per-tier names (`searxng`, `tavily`, `exa`, `jina`) are
-absent, because `web` is the cascade that already queries them — including them
+absent from `providers`, because `web` is the cascade that already queries them — including them
 would issue every live-web request twice. They appear when you pin one with
 `sources=tavily`. Measured on one `sources=all` query:
 

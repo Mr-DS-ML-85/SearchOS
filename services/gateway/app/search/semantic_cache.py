@@ -109,19 +109,19 @@ class SemanticCache:
         pinned-provider query with a whole-corpus result.
         """
         if not self.enabled or not query.strip():
-            return None, None, 0.0
+            return None, None, 0.0, "disabled"
         if embedding is None:
             embedding = await self._embedding(query)
         if not embedding:
-            return None, None, 0.0
+            return None, None, 0.0, "no_embedding"
 
         cache = get_cache()
         try:
             raw = await cache.lrange(_LIST_KEY, 0, self.max_entries - 1)
         except Exception:
-            return None, None, 0.0
+            return None, None, 0.0, "store_unavailable"
         if not raw:
-            return None, None, 0.0
+            return None, None, 0.0, "empty"
 
         now = time.time()
         # Rank every candidate first rather than picking a winner immediately.
@@ -166,7 +166,7 @@ class SemanticCache:
 
         if not candidates:
             # Nothing usable. Report how close the nearest entry came so the
-            # caller can tell a near-miss (0.89 against 0.92) from a different
+            # caller can tell a near-miss (0.83 against 0.80) from a different
             # question entirely (0.54).
             return None, best_any_query, best_any_score
 
@@ -177,10 +177,25 @@ class SemanticCache:
                 stored["semantic_cache_hit"] = True
                 stored["semantic_cache_match"] = matched_query
                 stored["semantic_cache_similarity"] = round(score, 4)
+                stored["semantic_cache_hit_reason"] = "matched"
                 get_metrics().semantic_cache_hits.inc()
+                # Also name the closest candidate that was *not* used, so the
+                # margin above the next-competitor is visible on a hit too.
+                for other_score, other_query, _k in candidates:
+                    if other_query != matched_query:
+                        stored["semantic_cache_runner_up_query"] = other_query
+                        stored["semantic_cache_runner_up_similarity"] = round(other_score, 4)
+                        break
                 return stored, matched_query, score
-        # Every match above threshold pointed at an evicted response.
-        return None, candidates[0][1] if candidates else None, (candidates[0][0] if candidates else 0.0)
+        # Every match above threshold pointed at an evicted response. The caller
+        # sees a similarity *above* the threshold with no hit, which looks like a
+        # contradiction unless the reason is stated.
+        return (
+            None,
+            candidates[0][1] if candidates else None,
+            candidates[0][0] if candidates else 0.0,
+            "target_expired",
+        )
 
     async def remember(
         self,
