@@ -281,7 +281,12 @@ class SearchOrchestrator:
                 page = replayed[offset:window]
                 semantic[0]["results"] = page
                 semantic[0]["returned"] = len(page)
-                semantic[0]["has_more"] = bool(replayed[offset + req.num_results :]) or (len(replayed) > window)
+                # Judged against the stored `total`, not the snapshot: the
+                # snapshot holds only the page the original caller asked for,
+                # so a 3-result snapshot of 10 matches replayed as
+                # `has_more: false` with no cursor.
+                stored_total = int(semantic[0].get("total") or len(replayed))
+                semantic[0]["has_more"] = offset + len(page) < stored_total
                 semantic[0]["next_cursor"] = (
                     encode_cursor(window, cursor_fingerprint) if semantic[0]["has_more"] and page else None
                 )

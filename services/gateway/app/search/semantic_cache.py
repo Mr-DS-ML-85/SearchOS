@@ -174,6 +174,11 @@ class SemanticCache:
         candidates.sort(key=lambda item: item[0], reverse=True)
 
         if not candidates:
+            if best_any_query is None:
+                # Nothing in this scope to compare against (entries exist, but
+                # for other sources/filters, or only this query's own). Saying
+                # "below_threshold" with no closest query read as a contradiction.
+                return None, None, 0.0, "empty"
             # Nothing usable. Report how close the nearest entry came so the
             # caller can tell a near-miss (0.83 against 0.80) from a different
             # question entirely (0.54).

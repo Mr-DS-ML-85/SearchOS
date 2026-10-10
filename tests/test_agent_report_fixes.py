@@ -215,3 +215,54 @@ class TestSettingsIsolation:
         from app.config import Settings, get_settings
 
         assert get_settings().rerank_enabled == Settings().rerank_enabled
+
+
+class TestSemanticReplay:
+    async def test_has_more_follows_stored_total_not_snapshot(self, cache):
+        """A 3-result snapshot of 10 matches replayed as has_more=false, no cursor."""
+        stored = {
+            "query": "orig",
+            "results": [
+                SearchResult(
+                    title=f"T{i}", url=f"https://e.com/{i}", snippet="", source="local", score=1, rank=i
+                ).model_dump()
+                for i in (1, 2, 3)
+            ],
+            "total": 10,
+            "returned": 3,
+            "has_more": True,
+            "took_ms": 1,
+            "cache_hit": False,
+            "degraded": [],
+            "providers": ["local"],
+        }
+
+        class FakeSemantic:
+            enabled = True
+            threshold = 0.8
+
+            async def lookup(self, query, scope, embedding=None, *, min_results=0):
+                return dict(stored), "orig", 0.98, "matched"
+
+        orch = _orch(cache)
+        orch.semantic_cache = FakeSemantic()
+        resp = await orch.search(SearchRequest(q="paraphrase", num_results=3, cache=True))
+        assert resp.cache_type == "semantic"
+        assert resp.has_more is True and resp.next_cursor
+
+
+class TestMissReason:
+    async def test_nothing_in_scope_is_empty_not_below_threshold(self, monkeypatch):
+        from app.search import semantic_cache as sc
+
+        entry = '{"q": "other", "k": "k", "e": [1.0, 0.0], "t": 9e18, "s": "federated|x", "off": 0, "n": 10}'
+
+        class FakeCache:
+            async def lrange(self, *a):
+                return [entry]
+
+        monkeypatch.setattr(sc, "get_cache", lambda: FakeCache())
+        cache = sc.SemanticCache()
+        cache.enabled = True
+        out = await cache.lookup("q", "all|y", embedding=[1.0, 0.0])
+        assert out[3] == "empty" and out[1] is None
