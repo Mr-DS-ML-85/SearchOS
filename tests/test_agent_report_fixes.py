@@ -291,3 +291,128 @@ class TestModelLoadRace:
         time.sleep(0.05)  # warm-up is now mid-load
         assert ce.score("q", [("title", "snippet")]) == [7.5]
         warm.join()
+
+
+class TestImageTopicality:
+    """Real cases from the index: CLIP matched genre ("diagram"), not topic."""
+
+    def _row(self, alt, page, url="https://x.org/i.png"):
+        import types
+
+        return types.SimpleNamespace(alt_text=alt, source_url=page, url=url)
+
+    def test_off_topic_diagram_is_rejected(self):
+        from app.api.images import _mentions, _topical_terms
+
+        terms = _topical_terms("event loop diagram asyncio")
+        assert terms == {"event", "loop", "asyncio"}
+        sql = self._row(
+            "Diagram showing interaction between hash index and buckets.", "https://learn.microsoft.com/sql"
+        )
+        assert not _mentions(terms, sql)
+
+    def test_topic_in_page_url_vouches_for_an_unlabelled_photo(self):
+        from app.api.images import _mentions, _topical_terms
+
+        yacht = self._row(None, "https://en.wikipedia.org/wiki/Sailing_yacht")
+        assert _mentions(_topical_terms("a sailing boat on the sea"), yacht)
+
+    def test_query_of_only_generic_words_is_not_filtered(self):
+        from app.api.images import _mentions, _topical_terms
+
+        assert _mentions(_topical_terms("diagram"), self._row(None, None))
+
+
+class TestFederatedAsksForIndexOnly:
+    async def test_peer_is_never_asked_to_search_the_web(self, monkeypatch):
+        """sources=all made each peer run its own ~5s web cascade, at the 5s timeout."""
+        import httpx
+        from app.search.providers.federated import FederatedProvider
+
+        asked: list[str] = []
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"results": [{"url": f"https://p.com/{asked[-1]}", "title": "t", "snippet": "s"}]}
+
+        class Client:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *e):
+                return False
+
+            async def get(self, url, params=None, headers=None):
+                asked.append(params["sources"])
+                return Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", Client)
+        out = await FederatedProvider([("a", "http://a"), ("b", "http://b")]).search(ProviderQuery(q="x"))
+        assert sorted(asked) == ["local", "local", "vector", "vector"]
+        assert out.error is None and {r.url for r in out.results} == {"https://p.com/local", "https://p.com/vector"}
+
+
+class TestCascadeTierLatency:
+    async def test_failed_tier_reports_its_real_latency(self):
+        """A tier that failed inside the cascade was reported as 0ms."""
+        from app.search.providers.cascade import CascadeProvider
+
+        class Slow:
+            name = "searxng"
+
+            async def search(self, query):
+                await asyncio.sleep(0.05)
+                return ProviderResult(provider=self.name, query=query.q, error="searxng: timeout")
+
+        class Ok:
+            name = "google"
+
+            async def search(self, query):
+                r = ProviderResult(provider=self.name, query=query.q)
+                r.results = [SearchResult(title="t", url="https://g.com", snippet="", source="google", score=1, rank=1)]
+                return r
+
+        out = await CascadeProvider([Slow(), Ok()]).search(ProviderQuery(q="x"))
+        assert out.raw["tier_latency_ms"]["searxng"] >= 40
+        assert "google" in out.raw["tier_latency_ms"]
+
+
+class TestHtmlEntitiesDecoded:
+    async def test_web_titles_and_snippets_are_unescaped(self, cache, monkeypatch):
+        """'Parameters &amp; Best Practices' reached callers and the index verbatim."""
+        from app.search import orchestrator as orch_mod
+
+        async def no_persist(*a, **k):
+            return {}
+
+        monkeypatch.setattr(orch_mod, "persist_web_results", no_persist)
+
+        class Web:
+            name = "web"
+
+            async def search(self, query):
+                r = ProviderResult(provider="web", query=query.q)
+                r.results = [
+                    SearchResult(
+                        title="Tuning: 10 Parameters &amp; Tips",
+                        url="https://w.com/a",
+                        snippet="a &lt;b&gt; &#39;c&#39;",
+                        source="searxng",
+                        score=1,
+                        rank=1,
+                    )
+                ]
+                return r
+
+        orch = SearchOrchestrator(providers={"web": Web()}, cache=cache)
+        orch.settings.rerank_enabled = False
+        orch.semantic_cache.enabled = False
+        resp = await orch.search(SearchRequest(q="tuning", cache=False))
+        assert resp.results[0].title == "Tuning: 10 Parameters & Tips"
+        assert resp.results[0].snippet == "a <b> 'c'"

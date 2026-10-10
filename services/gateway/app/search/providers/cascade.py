@@ -115,15 +115,23 @@ class CascadeProvider(SearchProvider):
         # Retry-After asked for by any tier in this attempt, so the cooldown
         # can honour the upstream's own window rather than a fixed guess.
         retry_waits: list[float] = []
+        # Wall time per tier attempted. A tier that failed inside the chain was
+        # reported as e.g. "searxng degraded, 0ms": the orchestrator had no
+        # timing for it and filled in zero, which reads as "failed instantly"
+        # even when it timed out after 6s.
+        tier_latency: dict[str, float] = {}
 
         for tier in self.tiers:
             attempted.append(tier.name)
+            tier_start = time.monotonic()
             try:
                 outcome = await tier.search(query)
             except Exception as exc:  # a tier must never break the chain
+                tier_latency[tier.name] = round((time.monotonic() - tier_start) * 1000)
                 failures.append(f"{tier.name}: {exc.__class__.__name__}")
                 get_metrics().provider_errors.labels(provider=tier.name, kind="exception").inc()
                 continue
+            tier_latency[tier.name] = round((time.monotonic() - tier_start) * 1000)
 
             if outcome.error:
                 failures.append(outcome.error)
@@ -149,6 +157,7 @@ class CascadeProvider(SearchProvider):
                 "attempted": attempted,
                 "fallback_used": tier.name != self.tiers[0].name,
                 "degraded_tiers": failures,
+                "tier_latency_ms": tier_latency,
             }
             if outcome.raw and isinstance(outcome.raw, dict):
                 for key, value in outcome.raw.items():
@@ -163,7 +172,7 @@ class CascadeProvider(SearchProvider):
             return combined
 
         combined.error = "web cascade exhausted: " + " | ".join(failures[:4])
-        combined.raw = {"attempted": attempted, "degraded_tiers": failures}
+        combined.raw = {"attempted": attempted, "degraded_tiers": failures, "tier_latency_ms": tier_latency}
         combined.latency_ms = (time.monotonic() - start) * 1000
         # Respect the longest Retry-After any tier asked for.
         self._open_cooldown(max(retry_waits) if retry_waits else None)

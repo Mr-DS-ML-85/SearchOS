@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 352 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 360 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -296,7 +296,7 @@ Query several instances at once and merge with RRF, so a URL that several indepe
 FEDERATED_ENDPOINTS=team-a=http://peer-a:8000,shared=http://shared:8000
 ```
 
-**Peer URLs resolve from inside the gateway container**, so `127.0.0.1:8001` is the gateway itself, not the host — use a compose service name or `host.docker.internal`. A peer that errors is recorded in `degraded` and then skipped without a live call for 30s, so one dead peer cannot add its timeout to every query.
+**Peer URLs resolve from inside the gateway container**, so `127.0.0.1:8001` is the gateway itself, not the host — use a compose service name or `host.docker.internal`. A peer that errors is recorded in `degraded` and then skipped without a live call for 30s, so one dead peer cannot add its timeout to every query. Peers are asked for their **index only** (local + vector) and queried concurrently; asking for `sources=all` made each peer run its own ~5s web search, which timed out at 5s (671ms after the fix).
 
 **A peer must point at a different database to be worth anything.** A peer sharing your Postgres returns your own index over HTTP, so its results duplicate yours exactly and federation adds latency without coverage. The test peer uses `searchos_peer`, its own database with its own gateway, worker and Redis DB, seeded with different documents — 9 results where the local index has 2, overlapping on 1.
 
@@ -308,7 +308,7 @@ CLIP embeds images and text into one space, so text→image and image→image ar
 
 Images are discovered while crawling, and picking them well matters more than it sounds: a page's first dozen `<img>` tags are its logo, edit shields and badges, not its photograph. Candidates are therefore ranked by **declared size** rather than document order, and SVG and icon-named assets are dropped — Wikimedia serves icons as `<name>.svg.png`, so a raster-looking suffix does not mean it is a photo.
 
-Text queries drop matches below `IMAGE_TEXT_MIN_SCORE` (0.24). Measured with CLIP ViT-B/32 on this corpus, a caption scores 0.28–0.32 against a matching photo and 0.18–0.22 against an unrelated one; without the floor, "event loop diagram" returned yacht photos. `below_min_score` in the response counts what was dropped.
+Text queries drop matches below `IMAGE_TEXT_MIN_SCORE` (0.24). Measured with CLIP ViT-B/32 on this corpus, a caption scores 0.28–0.32 against a matching photo and 0.18–0.22 against an unrelated one; without the floor, "event loop diagram" returned yacht photos. `below_min_score` in the response counts what was dropped. Between the floor and `IMAGE_TEXT_STRONG_SCORE` (0.30) a match must also share a topical query word with its alt text or URLs: CLIP matches genre as readily as topic, and SQL Server index diagrams scored 0.27–0.29 for "event loop diagram asyncio". The index holds no asyncio diagram, so that query now returns none; `source=google` finds them.
 
 Requires the `images` extra (Pillow). CLIP is never downloaded at startup, so deployments that never search images do not pay a ~600MB download in their boot path. It is **warmed** at startup when the weights are already cached, though: lazy loading made the first image query on each uvicorn worker take 4–7s (15s image-to-image). Warm, a text query takes 13–33ms.
 
@@ -480,6 +480,8 @@ Everything is environment-driven (`.env`). Key variables:
 | `IMAGE_MIN_DIMENSION` | `128` | smaller images (icons, tracking pixels) are not indexed |
 | `IMAGE_MAX_PER_DOCUMENT` | `12` | images embedded per crawled page |
 | `IMAGE_TEXT_MIN_SCORE` | `0.24` | text-to-image similarity floor (CLIP ViT-B/32) |
+| `IMAGE_TEXT_STRONG_SCORE` | `0.30` | below this, a text-to-image match also needs a topical word in its alt text or URLs |
+| `BACKFILL_INTERVAL_SECONDS` | `120` | idle re-check for documents without chunks (new web snippets) |
 | `FEDERATED_ENDPOINTS` | — | comma-separated `name=url` peers, e.g. `team-a=http://peer-a:8000` |
 | `FEDERATED_API_KEY` | — | bearer token sent to peers |
 | `DEDUPE_NEAR_DUPLICATES` | `true` | collapse SimHash near-duplicates at query time |

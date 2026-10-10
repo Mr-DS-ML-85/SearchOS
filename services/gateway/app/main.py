@@ -120,6 +120,19 @@ async def lifespan(app: FastAPI):
                     )
             except Exception as exc:
                 logger.warning("rerank model warm failed: %s: %s", exc.__class__.__name__, exc)
+        # ColBERT only when it is on by default. Measured: ~3.9s for the first
+        # ColBERT query on each uvicorn worker, ~0.45s after. Warming it for
+        # every deployment would hold ~440MB per worker for a feature that is
+        # off by default; a per-query `colbert=true` on a server where it is
+        # off still pays that first load.
+        if settings.colbert_enabled:
+            try:
+                from app.search import colbert
+
+                if await asyncio.to_thread(colbert.warm):
+                    logger.info("colbert model warm")
+            except Exception as exc:
+                logger.warning("colbert warm failed: %s: %s", exc.__class__.__name__, exc)
         # After the reranker, not before: the reranker is on every search's
         # path and CLIP only on image search, and CLIP takes ~6s to load.
         # CLIP is never *downloaded* at startup: that pulled ~600MB into the

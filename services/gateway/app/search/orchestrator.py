@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import time
 from dataclasses import dataclass, field
@@ -249,12 +250,12 @@ class SearchOrchestrator:
                 # jina, which is worse than reporting nothing: it reads as this
                 # request's behaviour.
                 cached["provider_latency_ms"] = {}
-                for field in (
-                    "semantic_cache_closest_query",
-                    "semantic_cache_closest_similarity",
-                    "semantic_cache_threshold",
-                ):
+                # The semantic cache was not consulted for an exact hit, so its
+                # closest_* stay empty; the threshold is configuration and is
+                # always reported.
+                for field in ("semantic_cache_closest_query", "semantic_cache_closest_similarity"):
                     cached.pop(field, None)
+                cached["semantic_cache_threshold"] = self.semantic_cache.threshold
                 return SearchResponse(**cached)
 
             semantic = await self.semantic_cache.lookup(query_text, semantic_scope, min_results=window)
@@ -291,22 +292,25 @@ class SearchOrchestrator:
                     encode_cursor(window, cursor_fingerprint) if semantic[0]["has_more"] and page else None
                 )
                 # The stored response may itself have been recorded on a *miss*,
-                # carrying that miss's closest_* values. Replaying them beside a
-                # hit is actively misleading: it reads as "matched at 0.82" when
-                # the hit matched at or above the threshold.
-                for field in (
-                    "semantic_cache_closest_query",
-                    "semantic_cache_closest_similarity",
-                    "semantic_cache_threshold",
-                ):
-                    semantic[0].pop(field, None)
+                # carrying that miss's closest_* values; replaying those beside a
+                # hit read as "matched at 0.82". They were then cleared, which
+                # left a hit reporting closest_query=null. On a hit the closest
+                # entry *is* the match, so report that.
+                semantic[0]["semantic_cache_closest_query"] = semantic[1]
+                semantic[0]["semantic_cache_closest_similarity"] = round(semantic[2], 4)
+                semantic[0]["semantic_cache_threshold"] = self.semantic_cache.threshold
                 return SearchResponse(**semantic[0])
 
             # Miss. The lookup already computed the nearest candidate and its
             # similarity; reporting it turns "the cache did not fire" from a
             # mystery into a measurement.
             near_query, near_score, near_reason = semantic[1], semantic[2], semantic[3]
-            near_miss = {"semantic_cache_miss_reason": near_reason}
+            # The threshold is configuration; reporting it only when a candidate
+            # existed left it null on every "empty" miss.
+            near_miss = {
+                "semantic_cache_miss_reason": near_reason,
+                "semantic_cache_threshold": self.semantic_cache.threshold,
+            }
             if near_query:
                 near_miss.update(
                     {
@@ -372,12 +376,17 @@ class SearchOrchestrator:
                 # an empty page".
                 empty_providers.append(provider.name)
             degraded_tiers = (outcome.raw or {}).get("degraded_tiers") or []
+            tier_latency = (outcome.raw or {}).get("tier_latency_ms") or {}
             for entry in degraded_tiers:
                 tier_name = str(entry).split(":", 1)[0].strip()
                 if tier_name and tier_name not in degraded:
                     degraded.append(tier_name)
                     provider_errors[tier_name] = str(entry)
-                    provider_latency.setdefault(tier_name, 0.0)
+                    provider_latency[tier_name] = tier_latency.get(tier_name, 0.0)
+            # The tier that answered, too, so "web 16.3s" can be read as
+            # "searxng 6s failed + google 10s".
+            for tier_name, ms in tier_latency.items():
+                provider_latency.setdefault(tier_name, ms)
             else:
                 metrics.upstream_latency.labels(provider=provider.name).observe(outcome.latency_ms / 1000)
             by_provider[provider.name] = outcome.results
@@ -395,6 +404,16 @@ class SearchOrchestrator:
             raise ProviderError(
                 f"All search providers failed: {', '.join(sorted(degraded))}" + (f" ({detail})" if detail else "")
             )
+
+        # Upstreams hand back HTML-escaped text ("Parameters &amp; Best
+        # Practices"). Decoded once here, so callers and the index both get
+        # the real characters; local/vector rows were decoded when written.
+        for name, rows in by_provider.items():
+            if name in ("local", "vector"):
+                continue
+            for r in rows:
+                r.title = html.unescape(r.title or "")
+                r.snippet = html.unescape(r.snippet or "")
 
         # Every live-web answer goes into the index, whichever tier produced it.
         # Only SearXNG used to persist (inside its own provider), so a query

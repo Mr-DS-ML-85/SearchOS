@@ -268,7 +268,20 @@ class StatsResponse(BaseModel):
     # stopped: documents kept growing while `chunks` stayed frozen, which is how
     # a fully non-functional vector index stayed invisible behind a
     # healthy-looking dashboard.
-    documents_without_chunks: int = Field(0, description="Indexed documents with no chunks — should be 0")
+    documents_without_chunks: int = Field(
+        0,
+        description=(
+            "Indexed documents with content but no chunks yet. Non-zero briefly after new web "
+            "results are saved; the backfill loop clears it within BACKFILL_INTERVAL_SECONDS"
+        ),
+    )
+    documents_empty: int = Field(
+        0,
+        description=(
+            "Indexed documents with no text at all (sign-in walls, empty pages). They can never "
+            "have chunks, so they are counted here rather than in documents_without_chunks"
+        ),
+    )
     chunks_with_embedding: int = Field(0, description="Chunks carrying a vector")
     chunks_without_embedding: int = Field(0, description="Chunks with a NULL vector")
     embedding_coverage: float = Field(0.0, description="Fraction of documents that have at least one embedded chunk")

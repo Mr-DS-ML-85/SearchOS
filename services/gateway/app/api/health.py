@@ -153,8 +153,19 @@ async def stats(
             .select_from(Document)
             .where(
                 Document.status == "indexed",
+                func.length(func.coalesce(Document.content_text, "")) > 0,
                 ~Document.chunks.any(),
             )
+        )
+        or 0
+    )
+    # Empty documents can never be chunked; counted in documents_without_chunks
+    # they kept it above zero forever, which reads as a stuck pipeline.
+    empty = (
+        await session.scalar(
+            select(func.count())
+            .select_from(Document)
+            .where(Document.status == "indexed", func.length(func.coalesce(Document.content_text, "")) == 0)
         )
         or 0
     )
@@ -184,6 +195,7 @@ async def stats(
         ingest_pending=pending,
         uptime_seconds=round(time.monotonic() - _STARTED_AT, 3),
         documents_without_chunks=without_chunks,
+        documents_empty=empty,
         chunks_with_embedding=with_embedding,
         chunks_without_embedding=max(chunks - with_embedding, 0),
         embedding_coverage=round(with_vector / documents, 4) if documents else 0.0,

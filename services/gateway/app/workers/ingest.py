@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -200,11 +201,13 @@ async def index_document(
 
     settings = get_settings()
     content = extracted.content if max_chars is None else extracted.content[:max_chars]
+    # <title> text arrives HTML-escaped from some extractors ("&amp;").
+    title = html.unescape(extracted.title) if extracted.title else extracted.title
     doc = Document(
         id=uuid.uuid4(),
         url=url,
         normalized_url=normalize_url(final_url),
-        title=extracted.title,
+        title=title,
         content_text=content,
         content_html=None,
         content_hash=hashlib.sha256(content.encode()).hexdigest(),
@@ -223,7 +226,7 @@ async def index_document(
     # with `english` regardless of what it was written in.
     language = extracted.language or detect_language(f"{extracted.title or ''} {content[:4000]}")
     doc.lang = language
-    doc.tsv = await build_language_tsv(language, f"{extracted.title or ''} {content}")
+    doc.tsv = await build_language_tsv(language, f"{title or ''} {content}")
     doc.simhash = simhash(content)
 
     chunks = chunk_text(
@@ -335,9 +338,14 @@ def _is_permanent_error(error: str) -> bool:
 
     if "http 404" in text or "http 410" in text or "http 401" in text or "http 403" in text:
         return True
-    if "page not found" in text or "blocked by robots" in text:
+    # The fetcher says "robots.txt disallows fetching ..."; matching only
+    # "blocked by robots" missed it, so every robots-blocked URL was retried
+    # worker_max_attempts times and held `ingest_pending` above zero for minutes.
+    if "page not found" in text or "blocked by robots" in text or "robots.txt disallows" in text:
         return True
-    if "unsupported content type" in text or "cannot extract content" in text:
+    # The page was fetched and the extractor found no text (a JS-only app
+    # shell, a sign-in wall); fetching it again a minute later finds the same.
+    if "unsupported content type" in text or "cannot extract content" in text or "empty extracted content" in text:
         return True
     if "refused by egress policy" in text:
         return True

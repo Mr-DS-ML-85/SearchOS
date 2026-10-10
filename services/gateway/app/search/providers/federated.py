@@ -23,6 +23,7 @@ so a peer that ranks something highly is trusted the same way the local index is
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import httpx
@@ -92,54 +93,81 @@ class FederatedProvider(SearchProvider):
             result.error = "federated: every peer is in outage"
             return result
 
-        params: dict = {
+        base_params: dict = {
             "q": query.q,
             "num_results": max(query.num_results, 10),
-            "sources": "all",
             "time_range": query.time_range,
             "cache": "true",
         }
         if query.language:
-            params["language"] = query.language
+            base_params["language"] = query.language
         if query.domains:
-            params["domains"] = query.domains
+            base_params["domains"] = query.domains
         if query.exclude_domains:
-            params["exclude_domains"] = query.exclude_domains
+            base_params["exclude_domains"] = query.exclude_domains
 
         settings = self.settings
+        headers = {"Authorization": f"Bearer {settings.federated_api_key or settings.bootstrap_admin_api_key}"}
+
+        async def ask(client: httpx.AsyncClient, base: str, sources: str) -> dict:
+            resp = await client.get(
+                f"{base.rstrip('/')}/v1/search", params={**base_params, "sources": sources}, headers=headers
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        async def ask_peer(client: httpx.AsyncClient, name: str, base: str) -> tuple[str, list[dict] | None, str]:
+            """A peer's *index* results: its local and vector providers, in parallel.
+
+            Peers were asked for sources=all, so each one also ran its own
+            live-web cascade: ~5s, the same web this instance already queries,
+            and right at the 5s timeout, so peers were marked degraded on most
+            queries. Federation exists to reach other indexes, not the web
+            twice. local and vector are requested separately because older
+            peers accept no single value meaning "index only".
+            """
+            outcomes = await asyncio.gather(
+                ask(client, base, "local"), ask(client, base, "vector"), return_exceptions=True
+            )
+            rows: list[dict] = []
+            seen: set[str] = set()
+            errors = [o for o in outcomes if isinstance(o, BaseException)]
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    continue
+                for row in outcome.get("results") or []:
+                    url = row.get("url")
+                    if url and url not in seen:
+                        seen.add(url)
+                        rows.append(row)
+            if len(errors) == len(outcomes):
+                # Only a peer that answered nothing at all is in outage; a peer
+                # without embeddings still serves its FTS index.
+                return name, None, _describe_failure(errors[0], settings)
+            return name, rows, ""
+
         rankings: dict[str, list[str]] = {}
         metadata: dict[str, dict] = {}
         failures: list[str] = []
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for name, base in peers:
-                try:
-                    resp = await client.get(
-                        f"{base.rstrip('/')}/v1/search",
-                        params=params,
-                        headers={
-                            "Authorization": f"Bearer {settings.federated_api_key or settings.bootstrap_admin_api_key}"
-                        },
-                    )
-                    resp.raise_for_status()
-                    payload = resp.json()
-                except Exception as exc:
-                    self._down_until[name] = time.monotonic() + _OUTAGE_SECONDS
-                    failures.append(f"{name}: {_describe_failure(exc, settings)}")
-                    get_metrics().federated_peer_errors.labels(peer=name).inc()
-                    continue
-                urls = [
-                    (r.get("url") or "") for r in (payload.get("results") or [])[: query.num_results] if r.get("url")
-                ]
-                if urls:
-                    rankings[name] = urls
-                    # The peer's title and snippet have to come along. Sending
-                    # bare URLs made every federated result unscoreable by the
-                    # cross-encoder downstream, so all of them fell below
-                    # RERANK_MIN_SCORE and the provider returned nothing.
-                    for row in (payload.get("results") or [])[: query.num_results]:
-                        if row.get("url"):
-                            metadata[row["url"]] = row
+            # All peers at once: queried in turn, N peers cost N round trips.
+            answers = await asyncio.gather(*(ask_peer(client, name, base) for name, base in peers))
+        for name, rows, failure in answers:
+            if rows is None:
+                self._down_until[name] = time.monotonic() + _OUTAGE_SECONDS
+                failures.append(f"{name}: {failure}")
+                get_metrics().federated_peer_errors.labels(peer=name).inc()
+                continue
+            urls = [r["url"] for r in rows[: query.num_results]]
+            if urls:
+                rankings[name] = urls
+                # The peer's title and snippet have to come along. Sending
+                # bare URLs made every federated result unscoreable by the
+                # cross-encoder downstream, so all of them fell below
+                # RERANK_MIN_SCORE and the provider returned nothing.
+                for row in rows[: query.num_results]:
+                    metadata[row["url"]] = row
 
         if not rankings:
             result.error = "federated: no peer returned results: " + "; ".join(failures)

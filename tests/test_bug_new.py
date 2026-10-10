@@ -606,6 +606,10 @@ class TestPermanentFetchFailuresAreNotRetried:
             "HTTP 401 fetching https://example.com/x",
             "HTTP 403 fetching https://example.com/x",
             "blocked by robots: https://example.com/x",
+            # The wording fetch_page actually raises; only the line above was
+            # tested, so real robots blocks were retried three times.
+            "robots.txt disallows fetching https://www.instagram.com/apple/?hl=bn",
+            "empty extracted content",
             "URL refused by egress policy: destination resolves to a non-public address",
             "unsupported content type: image/png",
             "cannot extract content of type image/png",

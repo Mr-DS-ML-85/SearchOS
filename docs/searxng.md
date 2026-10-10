@@ -128,6 +128,11 @@ Concurrent searches run the chain in parallel. The cascade's lock used to wrap
 the whole tier loop, so every live-web search in the process waited for the one
 ahead of it; it now guards only the cooldown check.
 
+Each tier the chain tried gets its own `provider_latency_ms` entry, measured
+inside the cascade, so `web 16.3s` reads as e.g. `searxng 6012ms` (failed) +
+`google 10240ms`. A tier that failed inside the chain used to be reported as
+`0ms`, which reads as "failed instantly" even after a full timeout.
+
 When every tier fails the cascade opens a cooldown
 (`SEARCH_CASCADE_COOLDOWN_SECONDS`, default 30) and returns immediately for that
 window instead of paying the timeout of each dead tier. A single successful

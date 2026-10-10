@@ -123,7 +123,16 @@ async def search_images(
         )
         for row in rows
     ]
-    kept = [h for h in hits if min_score is None or h.score >= min_score]
+    if min_score is None:
+        kept = hits
+    else:
+        strong = get_settings().image_text_strong_score
+        terms = _topical_terms(q or "")
+        kept = [
+            h
+            for h, row in zip(hits, rows, strict=True)
+            if h.score >= strong or (h.score >= min_score and _mentions(terms, row))
+        ]
     return ImageSearchResponse(
         query=q or image_url,
         images=kept,
@@ -171,6 +180,50 @@ async def _google_images(q: str | None, image_url: str | None, limit: int, start
         image_search_available=True,
         source="google",
     )
+
+
+# Words that describe what kind of image is wanted, not what it is about. They
+# match any diagram or photo, so they cannot vouch for topic.
+_GENERIC_TERMS = frozenset(
+    {
+        "diagram",
+        "diagrams",
+        "image",
+        "images",
+        "picture",
+        "photo",
+        "photos",
+        "chart",
+        "illustration",
+        "figure",
+        "screenshot",
+        "drawing",
+        "graphic",
+        "icon",
+        "logo",
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "into",
+        "showing",
+    }
+)
+
+
+def _topical_terms(q: str) -> set[str]:
+    import re
+
+    return {t for t in re.findall(r"[^\W_]+", q.lower()) if len(t) > 2 and t not in _GENERIC_TERMS}
+
+
+def _mentions(terms: set[str], row) -> bool:
+    """Whether a topical query word appears in the image's alt text or URLs."""
+    if not terms:
+        return True
+    text = " ".join(filter(None, [row.alt_text, row.source_url, row.url])).lower()
+    return any(t in text for t in terms)
 
 
 def _dot(a, b) -> float:

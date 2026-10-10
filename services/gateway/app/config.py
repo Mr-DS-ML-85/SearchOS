@@ -158,6 +158,12 @@ class Settings(BaseSettings):
     #: returned the nearest unrelated ones — yachts for "event loop diagram".
     #: Not applied to image-to-image, whose similarities live on another scale.
     image_text_min_score: float = 0.24
+    #: Between min and this, a text-to-image match must also share a topical
+    #: query word with its alt text or URLs. CLIP matches *genre* as readily as
+    #: topic: "event loop diagram asyncio" scored SQL Server index diagrams at
+    #: 0.27-0.29, the same band as a genuine yacht photo for "sailing boat"
+    #: (0.29), so no single threshold separates them; the words do.
+    image_text_strong_score: float = 0.30
     # ColBERT late interaction. Off by default: it costs ~64KB per chunk on top
     # of the chunk embedding, and most queries do not need token-level matching.
     # How long a semantic-cache entry may match. Bounded by the result cache
@@ -269,7 +275,11 @@ class Settings(BaseSettings):
     chunk_overlap_tokens: int = 64
 
     backfill_enabled: bool = True
-    backfill_interval_seconds: float = 3600.0
+    # Idle re-check interval. Every web provider now saves its results as
+    # snippet documents, which get chunks from this loop; at 3600s they sat
+    # chunk-less (invisible to vector search) for up to an hour. An idle pass
+    # is a single indexed query.
+    backfill_interval_seconds: float = 120.0
     backfill_batch_size: int = 50
     # Delay between passes while work remains. Draining at one batch per
     # backfill_interval took hours on a corpus with hundreds of chunk-less

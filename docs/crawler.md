@@ -61,7 +61,7 @@ egress-policy refusal is never retried through Proxify.
 and indexes them through the same path as ingest, so an enriched page gets
 chunks, vectors, a language and a SimHash like any crawled page.
 
-**Backfill** runs every `BACKFILL_INTERVAL_SECONDS` and keeps cycling every
+**Backfill** runs every `BACKFILL_INTERVAL_SECONDS` (default 120s) and keeps cycling every
 `BACKFILL_DRAIN_INTERVAL_SECONDS` while it finds work. Each pass:
 
 1. re-indexes documents still flagged as SearXNG snippets but holding more than
@@ -76,7 +76,7 @@ backfill pass: {'chunks_created': 61, 'vectors_filled': 0, 'snippets_repaired': 
 ```
 
 A document saved from a web result (a snippet, from any web provider) waits for the next backfill
-pass to get chunks, up to `BACKFILL_INTERVAL_SECONDS` when the loop is idle.
+pass to get chunks, up to `BACKFILL_INTERVAL_SECONDS` (120s) when the loop is idle. `/stats` counts these in `documents_without_chunks`; documents with no text at all are counted separately in `documents_empty`, since they can never have chunks.
 
 ## Politeness
 

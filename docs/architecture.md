@@ -59,7 +59,7 @@ Two tables back the newer retrieval subsystems:
 ### Model weights
 CLIP (~600 MB), the cross-encoder and the text embedder are cached on the `modelcache` volume shared by gateway and worker. Without it every rebuild re-pulls ~800 MB and the first query after a restart pays ~310 s; with it, ~1.5 s.
 
-ColBERT is **lazy-loaded on first use**, not at startup. CLIP is never *downloaded* at startup either, but it is **warmed** at startup when its weights are already in the cache: lazy loading made the first image query on each uvicorn worker pay 4–7s (15s for image-to-image).
+ColBERT is warmed at startup only when `COLBERT_ENABLED=true`; otherwise it loads on first use, and a per-query `colbert=true` pays that load once per uvicorn worker (measured: 3.9s first query, 0.45s after). CLIP is never *downloaded* at startup either, but it is **warmed** at startup when its weights are already in the cache: lazy loading made the first image query on each uvicorn worker pay 4–7s (15s for image-to-image).
 
 ### redis
 Search/extract result cache (DB 1), rate-limit counters (DB 2), snippet queue.

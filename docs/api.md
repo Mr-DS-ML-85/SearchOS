@@ -90,8 +90,15 @@ would issue every live-web request twice. They appear when you pin one with
 fire" is a measurement rather than a mystery: you can see whether the nearest
 *other* query was 0.82 against a 0.92 threshold (a genuine near-miss) or 0.54 (a
 different question entirely). The query's own entry is excluded — it scores 1.0
-and would always win, telling you nothing. These fields are cleared on a hit, so
-they never appear beside `cache_type: semantic` describing a different match.
+and would always win, telling you nothing. `semantic_cache_threshold` is
+configuration and is reported on every cached request (hit, miss, exact).
+
+On a **semantic hit**, `closest_query` / `closest_similarity` are the match
+itself (the same values as `semantic_cache_match` / `_similarity`). A stored
+response can carry the closest_* of the miss it was recorded on; those are
+replaced, never replayed, so they never describe a different match. With
+`cache=false` the caches are skipped entirely and every `semantic_cache_*` field
+is null by design.
 
 **Entries expire in ~5.5 minutes, by design.** An entry stores a *reference* to
 a cached response, not the response, so it cannot outlive its target — that was
@@ -341,6 +348,16 @@ ones. `below_min_score` counts what was dropped: an empty `images` with a
 non-zero count means nothing indexed depicts the query. Image-to-image has no
 floor; its similarities live on a different scale.
 
+**Topic check.** Between the floor and `IMAGE_TEXT_STRONG_SCORE` (default 0.30)
+a match must also share a topical query word with its alt text, page URL or
+image URL. Generic words (`diagram`, `photo`, `image`, …) do not count. CLIP
+matches *genre* as readily as topic: "event loop diagram asyncio" scored SQL
+Server index diagrams at 0.27–0.29, the same band as a genuine yacht photo for
+"sailing boat" (0.29), so no single threshold separates them; the words do. The
+asyncio query now returns nothing (the index holds no such image; try
+`source=google`), while the unlabelled yacht photo is kept because its page is
+`…/wiki/Sailing_yacht`.
+
 **Latency.** CLIP is warmed at gateway startup when its weights are already in
 the local Hugging Face cache, so the first image query on each worker no longer
 pays a 4–7s load. It is never downloaded at startup. Measured warm: text 13–33ms,
@@ -398,6 +415,12 @@ FEDERATED_ENDPOINTS=team-a=http://peer-a:8000,shared=http://shared:8000
 **Peer URLs are resolved from inside the gateway container.** `127.0.0.1:8001`
 means the gateway itself, not the host — use a compose service name or
 `host.docker.internal`.
+
+Each peer is asked for its **index only** (its `local` and `vector` providers, in
+parallel), and all peers are queried concurrently. Peers used to be asked for
+`sources=all`, so each ran its own live-web cascade: ~5s, the same web this
+instance already queries, and right at `FEDERATED_TIMEOUT_SECONDS` (5), so peers
+were degraded on most queries. Measured after the change: 671ms, not degraded.
 
 Results carry `source: federated:<peer>` so callers can see which index answered,
 and merge with Reciprocal Rank Fusion, so a URL that several peers return scores
@@ -476,7 +499,7 @@ answer to `offset=0&num_results=10`.
 | `GET /health/live` | process alive |
 | `GET /health/ready` | Postgres / Redis / renderer readiness, and `models`: `warming` until the startup model warm-up finishes |
 | `GET /metrics` | Prometheus `searchos_*` metrics |
-| `GET /stats` | `documents`, `chunks`, `api_keys`, `ingest_pending`, `uptime_seconds`, plus index completeness: `documents_without_chunks`, `chunks_with_embedding`, `chunks_without_embedding`, `embedding_coverage` (share of documents with at least one vector), `vector_search_available` |
+| `GET /stats` | `documents`, `chunks`, `api_keys`, `ingest_pending`, `uptime_seconds`, plus index completeness: `documents_without_chunks` (has text, no chunks yet; cleared by the backfill within `BACKFILL_INTERVAL_SECONDS`), `documents_empty` (no text at all, so never chunkable), `chunks_with_embedding`, `chunks_without_embedding`, `embedding_coverage` (share of documents with at least one vector), `vector_search_available` |
 
 ## Errors
 
