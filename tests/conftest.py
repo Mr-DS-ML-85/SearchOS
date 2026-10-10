@@ -113,6 +113,26 @@ class FakeRedis:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _restore_global_settings():
+    """Undo any direct assignment to the cached global Settings after each test.
+
+    Fifteen tests assign to it directly (``orch.settings.rerank_enabled = False``
+    is the global object, not a copy), so the change leaked into every later
+    test. Results depended on order: the DB end-to-end test passed in the full
+    run, because an earlier test had switched the reranker off, and failed when
+    run alone.
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    snapshot = dict(settings.__dict__)
+    yield
+    for name, value in snapshot.items():
+        if settings.__dict__.get(name) is not value:
+            object.__setattr__(settings, name, value)
+
+
 @pytest.fixture
 def fake_redis() -> FakeRedis:
     return FakeRedis()

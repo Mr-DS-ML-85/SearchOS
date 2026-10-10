@@ -410,8 +410,13 @@ class SearchOrchestrator:
         # Total matches are known before the reranker truncates anything.
         total = len(fused)
 
-        # Never let the reranker cap results below what the caller asked for.
-        self.reranker.top_k = max(self.settings.rerank_top_k, window)
+        # The reranker orders; it must not cut. Capped at max(RERANK_TOP_K,
+        # window), it dropped every match past the cap and `total` (recomputed
+        # below from the ranked list) reported the cap instead of the match
+        # count: 25 matches read as total=20. Scoring cost is bounded separately
+        # by RERANK_CANDIDATE_POOL, and with a cross-encoder the unscored tail
+        # still cannot clear RERANK_MIN_SCORE.
+        self.reranker.top_k = max(len(fused), window)
         ranked = await self.reranker.rerank_async(query_text, fused)
 
         # Late interaction runs after the cross-encoder, not instead of it. The

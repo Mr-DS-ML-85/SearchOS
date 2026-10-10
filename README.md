@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 334 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 337 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -468,7 +468,7 @@ Everything is environment-driven (`.env`). Key variables:
 | `BACKFILL_ENABLED` | `true` | background loop fills missing embeddings |
 | `BACKFILL_BATCH_SIZE` | `50` | documents per pass; drains continuously while work remains |
 | `FUSION_MODE` / `RRF_K` | `rrf` / `60` | fusion algorithm |
-| `RERANK_ENABLED` / `RERANK_TOP_K` | `true` / `20` | post-fusion rerank |
+| `RERANK_ENABLED` / `RERANK_TOP_K` | `true` / `20` | post-fusion rerank; `RERANK_TOP_K` is a lower bound on the scored pool and does not cap results or `total` |
 | `RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | cross-encoder; empty disables semantic reranking |
 | `RERANK_MIN_SCORE` | `3.0` | drop results below this **logit** (see *Reranking*) |
 | `RERANK_LOW_CONFIDENCE_SCORE` | `4.5` | below this the response is flagged `low_confidence` |

@@ -187,6 +187,9 @@ class Settings(BaseSettings):
 
     rrf_k: int = 60
     rerank_enabled: bool = True
+    # Lower bound on the cross-encoder's scored pool (with
+    # rerank_candidate_pool). It no longer truncates results: as a cut it made
+    # `total` report 20 for any query with more matches.
     rerank_top_k: int = 20
     # Cross-encoder model. Empty disables semantic reranking and falls back to
     # the heuristic boosts, whose scores are all near-identical and therefore

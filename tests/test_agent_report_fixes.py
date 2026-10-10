@@ -189,3 +189,29 @@ class TestMcpSearch:
         args = {"query": "boat", "image_url": "https://x.org/a.jpg"}
         result = asyncio.run(mcp.handle_search_images(None, _Params("search_images", args)))
         assert result.is_error and not client.calls
+
+
+class TestTotalIsTheMatchCount:
+    async def test_reranker_does_not_cap_total(self, cache):
+        """25 matches used to report total=20: the reranker cut at RERANK_TOP_K."""
+        orch = SearchOrchestrator(providers={"local": ListProvider(25)}, cache=cache)
+        orch.settings.rerank_enabled = True  # heuristic path; no cross-encoder in tests
+        orch.reranker.cross_encoder = None
+        orch.reranker.enabled = True
+        orch.semantic_cache.enabled = False
+        resp = await orch.search(SearchRequest(q="count", num_results=10, cache=False))
+        assert resp.total == 25 and resp.returned == 10 and resp.has_more
+        last = await orch.search(SearchRequest(q="count", num_results=10, offset=20, cache=False))
+        assert [r.rank for r in last.results] == [21, 22, 23, 24, 25] and not last.has_more
+
+
+class TestSettingsIsolation:
+    def test_a_mutates_global_settings(self):
+        from app.config import get_settings
+
+        get_settings().rerank_enabled = False
+
+    def test_b_sees_the_original_value(self):
+        from app.config import Settings, get_settings
+
+        assert get_settings().rerank_enabled == Settings().rerank_enabled
