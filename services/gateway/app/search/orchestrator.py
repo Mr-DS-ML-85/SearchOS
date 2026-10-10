@@ -305,6 +305,7 @@ class SearchOrchestrator:
         # could see a slow query but not why.
         provider_latency: dict[str, float] = {}
         provider_errors: dict[str, str] = {}
+        empty_providers: list[str] = []
         for provider, outcome in zip(providers, provider_results, strict=True):
             if isinstance(outcome, BaseException):
                 degraded.append(provider.name)
@@ -319,6 +320,12 @@ class SearchOrchestrator:
             # The cascade reports as one unit, so a tier that failed inside it
             # was invisible unless you pinned it. `degraded` now names the tier,
             # not just "web".
+            if (outcome.raw or {}).get("empty") and not outcome.results:
+                # Answered successfully with nothing. Not a failure, so it does
+                # not go in `degraded`, but invisible otherwise — and it is the
+                # difference between "no results exist" and "upstream returned
+                # an empty page".
+                empty_providers.append(provider.name)
             degraded_tiers = (outcome.raw or {}).get("degraded_tiers") or []
             for entry in degraded_tiers:
                 tier_name = str(entry).split(":", 1)[0].strip()
@@ -411,6 +418,7 @@ class SearchOrchestrator:
             degraded=degraded,
             providers=sorted(by_provider.keys()),
             provider_latency_ms=provider_latency,
+            empty_providers=empty_providers,
             top_score=results[0].score if results else None,
             low_confidence=low_confidence,
             min_score=min_score if ranked else None,

@@ -168,7 +168,7 @@ class SemanticCache:
             # Nothing usable. Report how close the nearest entry came so the
             # caller can tell a near-miss (0.83 against 0.80) from a different
             # question entirely (0.54).
-            return None, best_any_query, best_any_score
+            return None, best_any_query, best_any_score, "below_threshold"
 
         # Walk down the ranked list until one entry's response is still cached.
         for score, matched_query, key in candidates:
@@ -186,7 +186,7 @@ class SemanticCache:
                         stored["semantic_cache_runner_up_query"] = other_query
                         stored["semantic_cache_runner_up_similarity"] = round(other_score, 4)
                         break
-                return stored, matched_query, score
+                return stored, matched_query, score, "matched"
         # Every match above threshold pointed at an evicted response. The caller
         # sees a similarity *above* the threshold with no hit, which looks like a
         # contradiction unless the reason is stated.

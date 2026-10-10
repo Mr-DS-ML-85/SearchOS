@@ -341,3 +341,31 @@ class TestCacheHitDoesNotReplayProviderTimings:
         # Mirrors the orchestrator's hit path.
         cached["provider_latency_ms"] = {}
         assert cached["provider_latency_ms"] == {}
+
+
+class TestSemanticCacheReturnShape:
+    """`lookup` must always return a 4-tuple.
+
+    Adding `semantic_cache_miss_reason` widened the return value, and two of the
+    six paths were missed. The orchestrator indexed `[3]` unconditionally on a
+    miss, so the `below_threshold` path raised IndexError and every query whose
+    nearest cached entry fell short returned HTTP 500 — intermittently,
+    depending on what happened to be cached. Assert the shape rather than
+    trusting every path to have been updated.
+    """
+
+    def test_every_return_path_has_four_elements(self):
+        import ast
+        import inspect
+
+        from app.search import semantic_cache
+
+        tree = ast.parse(inspect.getsource(semantic_cache))
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SemanticCache")
+        fn = next(n for n in cls.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "lookup")
+        returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+        assert returns, "no returns found in lookup"
+        for node in returns:
+            value = node.value
+            assert isinstance(value, ast.Tuple), f"line {node.lineno} returns a non-tuple"
+            assert len(value.elts) == 4, f"line {node.lineno} returns {len(value.elts)} values, expected 4"

@@ -178,7 +178,15 @@ class TavilyProvider(SearchProvider):
                     published=self._published(item.get("published_date")),
                 )
             )
-        result.raw = {"answer": payload.get("answer")}
+        result.raw = {
+            "answer": payload.get("answer"),
+            # An empty 200 is indistinguishable from "matched nothing" unless
+            # recorded. It also cost seconds to arrive, so a fast empty is worth
+            # surfacing: on the keyless tier it usually means the upstream
+            # degraded quietly rather than genuinely having no results.
+            "empty": not result.results,
+            "upstream_results": len(payload.get("results") or []),
+        }
         result.latency_ms = (time.monotonic() - start) * 1000
         return result
 

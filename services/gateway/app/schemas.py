@@ -129,6 +129,15 @@ class SearchResponse(BaseModel):
             "cache hit replays the original request's timings."
         ),
     )
+    empty_providers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Providers that answered successfully with zero results. Not in "
+            "`degraded` — they worked — but previously indistinguishable from "
+            "never having run, which made a slow empty upstream look like "
+            "'nothing matched'."
+        ),
+    )
     degraded: list[str]
     providers: list[str]
     top_score: float | None = Field(
