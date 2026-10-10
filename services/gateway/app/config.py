@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     render_max_bytes: int = 10485760
 
     searxng_url: str = ""
-    searxng_timeout_seconds: float = 12.0
+    searxng_timeout_seconds: float = 6.0
     # Ordered fallbacks used when SearXNG fails or is in cooldown. First one
     # that answers wins; an unconfigured tier is skipped. The local FTS and
     # vector providers are unaffected by this chain.
@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     # header, so the tier is available on a fresh install. Set false to require
     # a key.
     tavily_keyless: bool = True
-    tavily_timeout_seconds: float = 12.0
+    tavily_timeout_seconds: float = 6.0
     # basic is ~4x faster than advanced. The cross-encoder reranks downstream,
     # so Tavily's deeper pass is not worth the latency in a fallback tier.
     tavily_search_depth: str = "basic"
@@ -101,9 +101,9 @@ class Settings(BaseSettings):
     exa_mcp_enabled: bool = True
     exa_use_mcp: bool = True
     exa_advanced: bool = False
-    exa_timeout_seconds: float = 12.0
+    exa_timeout_seconds: float = 6.0
     jina_api_key: str = ""
-    jina_timeout_seconds: float = 20.0
+    jina_timeout_seconds: float = 8.0
     # After the whole chain fails, refuse live attempts for this long and serve
     # the degraded local result instead. Without it every request pays the full
     # timeout of every dead tier.
@@ -181,7 +181,7 @@ class Settings(BaseSettings):
     # environment and rejects a comma-separated value outright.
     federated_endpoints: str = ""
     federated_api_key: str = ""
-    federated_timeout_seconds: float = 10.0
+    federated_timeout_seconds: float = 5.0
     extract_cache_ttl_seconds: int = 3600
 
     extract_max_bytes: int = 5242880

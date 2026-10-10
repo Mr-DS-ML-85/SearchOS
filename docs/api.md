@@ -228,7 +228,14 @@ Results carry `source: federated:<peer>` so callers can see which index answered
 and merge with Reciprocal Rank Fusion, so a URL that several peers return scores
 higher than one only a single peer found. A peer that fails is skipped and
 recorded in `degraded`, and is then skipped without a live call for 30 seconds so
-one dead peer cannot add its timeout to every query.
+one dead peer cannot add its timeout to every query. The message names the cause
+(missing credential, rejected credential, 404, timeout, unreachable) rather than
+the exception class.
+
+A peer pointed at the **same database** returns the same documents as the local
+index — federation then costs a network round-trip and a second rerank to
+reproduce answers you already had. Point peers at their own database; check by
+comparing URL sets between `sources=local` and `sources=federated`.
 
 ## Search operators
 

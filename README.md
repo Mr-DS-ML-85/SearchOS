@@ -292,6 +292,10 @@ FEDERATED_ENDPOINTS=team-a=http://peer-a:8000,shared=http://shared:8000
 
 **Peer URLs resolve from inside the gateway container**, so `127.0.0.1:8001` is the gateway itself, not the host — use a compose service name or `host.docker.internal`. A peer that errors is recorded in `degraded` and then skipped without a live call for 30s, so one dead peer cannot add its timeout to every query.
 
+**A peer must point at a different database to be worth anything.** A peer sharing your Postgres returns your own index over HTTP, so its results duplicate yours exactly and federation adds latency without coverage. The test peer uses `searchos_peer`, its own database with its own gateway, worker and Redis DB, seeded with different documents — 9 results where the local index has 2, overlapping on 1.
+
+Peer error messages name the cause (`HTTP 401 — no credential configured. Set FEDERATED_API_KEY`, `timeout`, `connection refused`) rather than the exception class, because the expensive mistake is a missing key that otherwise looks like a federation bug.
+
 ### Image search
 
 CLIP embeds images and text into one space, so text→image and image→image are the same cosine search rather than separate machinery.

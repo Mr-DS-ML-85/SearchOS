@@ -103,3 +103,47 @@ class TestPublishedDateParsing:
         for candidate in ("2001-08-25", "sometime in 2001", 12345, None, [], {"y": 2020}):
             value = _parse_published(candidate)
             assert value is None or hasattr(value, "isoformat"), candidate
+
+
+def _run_filter(domains, exclude):
+    from app.config import get_settings
+    from app.search.base import ProviderQuery
+    from app.search.local_index import LocalIndexProvider
+
+    provider = LocalIndexProvider(get_settings())
+    query = ProviderQuery(q="x", domains=domains, exclude_domains=exclude, num_results=5)
+    return provider._domain_filters(query)
+
+
+class TestDomainFilterMatchesHostOnly:
+    """The domain filter must match the host, not a substring of the URL.
+
+    It shipped as ``normalized_url LIKE '%wikipedia.org%'``, so
+    ``domains=wikipedia.org`` returned ``community.n8n.io/...wikipedia.org...``.
+    Rewriting it as ``LIKE '%://wikipedia.org'`` was worse in a way that hid
+    completely: with no trailing ``%`` that pattern only matches a URL *ending*
+    in the domain, which no page URL does, so the filter silently matched
+    nothing — and exclude_domains silently excluded nothing.
+    """
+
+    def test_include_matches_exact_host_and_subdomains(self):
+        sql, params = _run_filter(["wikipedia.org"], None)
+        assert ":dom0" in sql and ":subdom0" in sql
+        assert params["dom0"] == "wikipedia.org"
+        assert params["subdom0"] == "%.wikipedia.org"
+
+    def test_patterns_have_no_bare_trailing_host_only_clause(self):
+        """Regression guard: no pattern may be a bare '%://domain'.
+
+        That shape matches only URLs ending in the domain, which is never a page
+        URL, so the filter returns nothing and looks merely unsatisfiable.
+        """
+        _, params = _run_filter(["wikipedia.org"], ["example.com"])
+        for key, value in params.items():
+            assert not value.startswith("%://"), f"{key}={value!r} can never match a page URL"
+
+    def test_exclusion_is_emitted(self):
+        sql, params = _run_filter(None, ["wikipedia.org"])
+        assert "NOT LIKE" in sql
+        assert params["excl0"] == "wikipedia.org"
+        assert params["subexcl0"] == "%.wikipedia.org"

@@ -79,20 +79,35 @@ class LocalIndexProvider(SearchProvider):
         return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def _domain_filters(self, query: ProviderQuery) -> tuple[str, dict]:
+        """Match on the URL *host*, not on a substring of the whole URL.
+
+        Two bugs lived here. It used to be ``LIKE '%wikipedia.org%'``, which
+        matches the domain anywhere in the URL, so ``domains=wikipedia.org``
+        returned ``community.n8n.io/...wikipedia.org...``. Rewriting it as
+        ``LIKE '%://wikipedia.org'`` was wrong too, for a reason that hid
+        completely: without a trailing ``%`` that pattern only matches a URL
+        *ending* in the domain, which no page URL does, so the filter silently
+        matched nothing and exclude_domains silently excluded nothing.
+
+        Comparing the extracted host avoids both failure modes. ``example.com``
+        matches ``example.com`` and ``docs.example.com``, and not
+        ``notexample.com`` or ``example.com.evil.net``.
+        """
+        host = "split_part(split_part(split_part(d.normalized_url, '://', 2), '/', 1), ':', 1)"
         sql = ""
         params: dict = {}
         if query.domains:
-            # Placeholder *names* are generated here; every value is bound.
-            # noqa comments cannot live inside the SQL literal, so the whole
-            # filter clause is assembled from generated placeholder names only.
-            clauses = " OR ".join(f"d.normalized_url LIKE :dom{i} ESCAPE '\\'" for i in range(len(query.domains)))
-            sql += f" AND ({clauses})"
-            for i, d in enumerate(query.domains):
-                params[f"dom{i}"] = f"%{self._escape_like(d)}%"
+            clauses = []
+            for i, domain in enumerate(query.domains):
+                params[f"dom{i}"] = self._escape_like(domain.strip().lower())
+                clauses.append(f"({host} = :dom{i} OR {host} LIKE :subdom{i})")
+                params[f"subdom{i}"] = f"%.{params[f'dom{i}']}"
+            sql += " AND (" + " OR ".join(clauses) + ")"
         if query.exclude_domains:
-            for i, d in enumerate(query.exclude_domains):
-                sql += f" AND d.normalized_url NOT LIKE :excl{i} ESCAPE '\\'"
-                params[f"excl{i}"] = f"%{self._escape_like(d)}%"
+            for i, domain in enumerate(query.exclude_domains):
+                params[f"excl{i}"] = self._escape_like(domain.strip().lower())
+                params[f"subexcl{i}"] = f"%.{params[f'excl{i}']}"
+                sql += f" AND ({host} != :excl{i} AND {host} NOT LIKE :subexcl{i})"
         return sql, params
 
     def _time_filter(self, query: ProviderQuery) -> tuple[str, dict]:
