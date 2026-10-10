@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     image_max_bytes: int = 8_000_000
     image_max_per_document: int = 12
     images_enabled: bool = True
+    # ColBERT late interaction. Off by default: it costs ~64KB per chunk on top
+    # of the chunk embedding, and most queries do not need token-level matching.
+    colbert_enabled: bool = False
+    colbert_model: str = "colbert-ir/colbertv2.0"
+    # Chunks above this candidate count are not rescored. MaxSim is O(query x
+    # doc) per chunk in Python, so the tail costs more than it returns.
+    colbert_top_n: int = 50
     embedding_device: str = "cpu"
     embedding_batch_size: int = 16
 

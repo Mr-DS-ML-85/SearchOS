@@ -95,6 +95,16 @@ class Chunk(Base):
     document: Mapped[Document] = relationship(back_populates="chunks")
 
 
+class ChunkToken(Base):
+    """One ColBERT vector per token. See app/search/colbert.py for the rationale."""
+
+    __tablename__ = "chunk_tokens"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("chunks.id", ondelete="CASCADE"), primary_key=True)
+    position: Mapped[int] = mapped_column(primary_key=True)
+    embedding: Mapped[list[float]] = mapped_column(Vector(128))
+
+
 class Image(Base):
     """A CLIP-embedded image, either uploaded or discovered on an indexed page."""
 
