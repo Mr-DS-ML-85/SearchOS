@@ -159,9 +159,9 @@ docker compose --profile mcp up -d
 curl -s localhost:8099/healthz   # {"status":"ok","service":"searchos-mcp"}
 ```
 
-`/mcp`, `/sse` and `/messages/` expose the full tool set including `ingest`, so the HTTP transports require `MCP_HTTP_TOKEN`. The server refuses to bind a non-loopback address without one. stdio is unaffected — it is a local process, not a socket.
+`/mcp`, `/sse` and `/messages/` expose all nine tools including `ingest`, so the HTTP transports require `MCP_HTTP_TOKEN`. The server refuses to bind a non-loopback address without one. stdio is unaffected — it is a local process, not a socket.
 
-Tools: `search`, `extract`, `ingest`, `stats`, `health`.
+Tools: `search`, `extract`, `ingest`, `stats`, `health`, `search_images`, `suggest`, `popular`, `recent`.
 
 **Claude Code** speaks Streamable HTTP natively:
 

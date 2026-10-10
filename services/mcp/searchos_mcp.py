@@ -114,8 +114,34 @@ def _search_schema() -> dict[str, Any]:
             "query": {"type": "string", "description": "search query (required)"},
             "sources": {
                 "type": "string",
-                "enum": ["all", "local", "vector", "web"],
-                "description": "which providers to query; 'web' forces live SearXNG",
+                # Must track the gateway's SearchSource enum. This list was stale
+                # at four entries, so an agent asking for sources="federated"
+                # got a validation error from the gateway instead of a result.
+                "enum": [
+                    "all",
+                    "local",
+                    "vector",
+                    "web",
+                    "searxng",
+                    "tavily",
+                    "exa",
+                    "jina",
+                    "federated",
+                ],
+                "description": (
+                    "which providers to query. 'web' is the whole fallback cascade "
+                    "(SearXNG -> Tavily -> Exa -> Jina); the tier names pin one "
+                    "upstream and error rather than silently falling back; "
+                    "'federated' queries the configured SearchOS peers."
+                ),
+            },
+            "cursor": {
+                "type": "string",
+                "description": (
+                    "opaque cursor from a previous response. Prefer over offset for "
+                    "deep paging: OFFSET makes Postgres walk and discard every "
+                    "skipped row, so page 50 costs about 50x page 1."
+                ),
             },
             "num_results": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
             "language": {"type": "string", "description": "e.g. 'en'"},
@@ -139,6 +165,35 @@ def _search_schema() -> dict[str, Any]:
             "cache": {"type": "boolean", "default": True, "description": "use the Redis result cache"},
         },
         "required": ["query"],
+    }
+
+
+def _images_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "text query — text-to-image search by what the image depicts",
+            },
+            "image_url": {
+                "type": "string",
+                "description": "reference image URL — find images like this one",
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _suggest_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "q": {"type": "string", "description": "prefix to complete"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 25, "default": 8},
+        },
+        "required": ["q"],
     }
 
 
@@ -209,6 +264,48 @@ def _tools() -> list[types.Tool]:
             description="Gateway health: postgres/redis/renderer status and service version.",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
+        types.Tool(
+            name="search_images",
+            description=(
+                "Find images by what they depict. CLIP embeds images and text into one "
+                "space, so text-to-image and image-to-image are the same operation: pass "
+                "either `query` (text) or `image_url` (reference image). Images are "
+                "indexed as pages are crawled; icons and undersized assets are skipped."
+            ),
+            input_schema=_images_schema(),
+        ),
+        types.Tool(
+            name="suggest",
+            description=(
+                "Prefix completions from indexed titles, for search-as-you-type. "
+                "Cheaper than a full search when the query is still being typed."
+            ),
+            input_schema=_suggest_schema(),
+        ),
+        types.Tool(
+            name="popular",
+            description=(
+                "Most-run queries, from the live Redis query counter. Corpus-wide, not scoped to the calling key."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}},
+            },
+        ),
+        types.Tool(
+            name="recent",
+            description=(
+                "Documents the crawler indexed or re-crawled in the last `hours`. A "
+                "'what changed' feed that search cannot express. Corpus-wide."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "hours": {"type": "integer", "minimum": 1, "maximum": 2160, "default": 24},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                },
+            },
+        ),
     ]
 
 
@@ -258,6 +355,9 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
                 "country": args.get("country"),
                 "time_range": args.get("time_range", "all"),
                 "offset": offset,
+                # cursor and offset are mutually exclusive upstream; sending
+                # both makes the gateway prefer the cursor.
+                "cursor": args.get("cursor"),
                 "cache": args.get("cache", True),
                 "domains": domains or None,
                 "exclude_domains": exclude_domains or None,
@@ -353,6 +453,99 @@ async def handle_health(ctx: ServerRequestContext, params: types.CallToolRequest
     return text_result(json.dumps(body, indent=2, ensure_ascii=False))
 
 
+async def handle_search_images(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
+    args = params.arguments or {}
+    query = args.get("query")
+    image_url = args.get("image_url")
+    if not query and not image_url:
+        # The gateway rejects this too, but an agent benefits from being told
+        # which argument is missing rather than seeing a bare 422.
+        return text_result(
+            "provide either 'query' (text-to-image) or 'image_url' (image-to-image)",
+            is_error=True,
+        )
+    try:
+        body = await gateway_call(
+            "GET",
+            "/v1/images/search",
+            # The gateway's parameter is `q`; the MCP tool exposes `query` to
+            # match the search tool's vocabulary.
+            params={
+                "q": query,
+                "image_url": image_url,
+                "limit": args.get("limit", 10),
+            },
+        )
+    except GatewayError as e:
+        return text_result(str(e), is_error=True)
+    if not body.get("image_search_available", True):
+        return text_result(
+            "Image search is unavailable: the `images` extra (Pillow) is not "
+            "installed on the gateway. This is a degraded mode, not an empty index.",
+            is_error=True,
+        )
+    images = [
+        {
+            "score": i.get("score"),
+            "url": i.get("url"),
+            "width": i.get("width"),
+            "height": i.get("height"),
+            "alt_text": i.get("alt_text"),
+            "source_page": i.get("source_url"),
+        }
+        for i in body.get("images", [])
+    ]
+    return text_result(
+        json.dumps(
+            {"query": body.get("query"), "took_ms": body.get("took_ms"), "images": images},
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+async def handle_suggest(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
+    args = params.arguments or {}
+    prefix = args.get("q")
+    if not prefix or not str(prefix).strip():
+        return text_result("q is required and must not be blank", is_error=True)
+    try:
+        # /v1/suggest returns a bare JSON array, not an object.
+        body = await gateway_call("GET", "/v1/suggest", params={"q": prefix, "limit": args.get("limit", 8)})
+    except GatewayError as e:
+        return text_result(str(e), is_error=True)
+    items = body if isinstance(body, list) else body.get("suggestions", [])
+    return text_result(
+        json.dumps(
+            [{"text": i.get("text"), "count": i.get("count")} for i in items],
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+async def handle_popular(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
+    args = params.arguments or {}
+    try:
+        body = await gateway_call("GET", "/v1/popular", params={"limit": args.get("limit", 10)})
+    except GatewayError as e:
+        return text_result(str(e), is_error=True)
+    return text_result(json.dumps(body.get("queries", []), indent=2, ensure_ascii=False))
+
+
+async def handle_recent(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
+    args = params.arguments or {}
+    try:
+        body = await gateway_call(
+            "GET",
+            "/v1/recent",
+            params={"hours": args.get("hours", 24), "limit": args.get("limit", 20)},
+        )
+    except GatewayError as e:
+        return text_result(str(e), is_error=True)
+    return text_result(json.dumps(body.get("documents", []), indent=2, ensure_ascii=False))
+
+
 def build_server() -> Server:
     server = Server(
         "searchos",
@@ -384,6 +577,10 @@ async def _call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPar
         "ingest": handle_ingest,
         "stats": handle_stats,
         "health": handle_health,
+        "search_images": handle_search_images,
+        "suggest": handle_suggest,
+        "popular": handle_popular,
+        "recent": handle_recent,
     }
     handler = handlers.get(params.name)
     if handler is None:

@@ -11,6 +11,19 @@
 | `ingest` | `POST /v1/admin/ingest` | seed a URL or sitemap (needs admin key) |
 | `stats` | `GET /stats` | index + queue + uptime stats |
 | `health` | `GET /health` | liveness/readiness |
+| `search_images` | `GET /v1/images/search` | text-to-image (`query`) or image-to-image (`image_url`) via CLIP |
+| `suggest` | `GET /v1/suggest` | prefix completions from indexed titles |
+| `popular` | `GET /v1/popular` | most-run queries from the live Redis counter |
+| `recent` | `GET /v1/recent` | documents the crawler indexed or re-crawled recently |
+
+The MCP server is a **translator**, not a second API: the gateway exposes no MCP
+endpoint itself. Every tool above is a thin wrapper over one REST route, so
+anything added to the gateway needs adding here too or agents cannot reach it.
+
+The `search` tool's `sources` enum is asserted in `tests/test_mcp.py` against the
+gateway's own `SearchSource`, because it previously drifted: MCP listed four
+values while the gateway accepted ten, and an agent asking for
+`sources="federated"` received a validation error instead of results.
 
 ## Running
 
@@ -192,7 +205,7 @@ MCP's July 2026 spec revision made the protocol stateless over HTTP (full change
 SDK 2.0's `Server` runs a dual-era loop, so one instance serves both handshake-era and modern clients. Verified live:
 
 - `POST /mcp` → `server/discover` → `result_type="complete"`, `supported_versions=["2026-07-28"]`
-- `tools/list`, `tools/call` (search/health/stats/extract) work over both eras
+- `tools/list`, `tools/call` (all nine tools) work over both eras
 
 ## Env vars
 

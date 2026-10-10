@@ -93,9 +93,35 @@ def result_text(result) -> dict:
 
 
 class TestToolCatalogue:
-    def test_exposes_the_five_documented_tools(self, _reload_mcp):
+    def test_exposes_the_documented_tools(self, _reload_mcp):
         names = {t.name for t in _reload_mcp._tools()}
-        assert names == {"search", "extract", "ingest", "stats", "health"}
+        assert names == {
+            "search",
+            "extract",
+            "ingest",
+            "stats",
+            "health",
+            "search_images",
+            "suggest",
+            "popular",
+            "recent",
+        }
+
+    def test_search_sources_enum_matches_the_gateway(self, _reload_mcp):
+        """The MCP enum must track the gateway, not its own history.
+
+        It listed four sources while the gateway accepted ten, so an agent asking
+        for sources="federated" got a validation error from the gateway rather
+        than results. Importing SearchSource here is what keeps them from
+        drifting apart again.
+        """
+        from typing import get_args
+
+        from app.schemas import SearchSource
+
+        expected = set(get_args(SearchSource))
+        search = next(t for t in _reload_mcp._tools() if t.name == "search")
+        assert set(search.input_schema["properties"]["sources"]["enum"]) == expected
 
     def test_every_tool_has_a_schema_and_description(self, _reload_mcp):
         for tool in _reload_mcp._tools():
