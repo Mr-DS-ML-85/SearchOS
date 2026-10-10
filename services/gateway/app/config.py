@@ -132,6 +132,16 @@ class Settings(BaseSettings):
     # Chunks above this candidate count are not rescored. MaxSim is O(query x
     # doc) per chunk in Python, so the tail costs more than it returns.
     colbert_top_n: int = 50
+    # How much MaxSim moves a result relative to the cross-encoder. Blending
+    # rather than replacing keeps `score` monotonic with `rank`; reordering
+    # without rescoring produced results whose order contradicted their scores.
+    #
+    # Calibrated, not guessed: MaxSim here lands around 0.06-0.09 (it is divided
+    # by query token count), while the cross-encoder emits logits of 3-6. At a
+    # weight of 2 the ColBERT term moved a score by ~0.16 and never once changed
+    # an ordering — it was wired in and doing nothing. 30 puts its contribution
+    # in the same range as the signal it is meant to correct.
+    colbert_weight: float = 30.0
     embedding_device: str = "cpu"
     embedding_batch_size: int = 16
 

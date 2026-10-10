@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from app.cache import Cache, cache_key, get_cache
 from app.config import Settings, get_settings
+from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchRequest, SearchResponse, SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
@@ -17,6 +18,8 @@ from app.search.operators import parse as parse_query
 from app.search.rerank import Reranker, get_cross_encoder
 from app.search.semantic_cache import SemanticCache
 from app.search.simhash import near_duplicate, to_signed
+
+logger = get_logger("search")
 
 
 def encode_cursor(offset: int, fingerprint: str) -> str:
@@ -247,6 +250,20 @@ class SearchOrchestrator:
         # Never let the reranker cap results below what the caller asked for.
         self.reranker.top_k = max(self.settings.rerank_top_k, window)
         ranked = await self.reranker.rerank_async(query_text, fused)
+
+        # Late interaction runs after the cross-encoder, not instead of it. The
+        # cross-encoder is better at topical relevance; MaxSim is better at
+        # partial token coverage. Reordering an already-good list is cheaper
+        # and safer than substituting a weaker scorer for a stronger one.
+        if self.settings.colbert_enabled:
+            try:
+                from app.db import get_session_factory
+                from app.search.colbert_index import colbert_rerank
+
+                ranked = await colbert_rerank(get_session_factory(), query_text, ranked)
+            except Exception as exc:
+                # ColBERT is an enhancement; losing it must not lose the query.
+                logger.warning("colbert rerank skipped: %s: %s", exc.__class__.__name__, exc)
 
         # Drop rows the reranker scored as irrelevant. Only meaningful once a
         # cross-encoder produced the scores: the heuristic keeps every fused

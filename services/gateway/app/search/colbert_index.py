@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import get_settings
 from app.logging import get_logger
-from app.models import ChunkToken
+from app.models import Chunk, ChunkToken, Document
+from app.schemas import SearchResult
 
 logger = get_logger("search.colbert.index")
 
@@ -41,13 +42,19 @@ async def index_chunk_tokens(
 async def colbert_rerank(
     session_factory: async_sessionmaker,
     query: str,
-    candidates: list[dict],
-) -> list[dict]:
-    """Rescore candidates with MaxSim and reorder them.
+    candidates: list[SearchResult],
+) -> list[SearchResult]:
+    """Rescore document-level candidates with MaxSim and reorder them.
 
-    Operates on the already-retrieved top-N rather than the whole index:
-    MaxSim is a Python matrix product per chunk, and rescoring 7000 chunks to
-    reorder 50 would cost far more than the ordering is worth.
+    The local index searches at *document* level, so candidates arrive as URLs
+    with no chunk attached. Rather than restructure retrieval to carry chunk ids
+    through fusion, each candidate's chunks are scored and the best one stands
+    in for the document — a long page usually has one passage that answers the
+    query, and that is the one MaxSim should see.
+
+    Only the top ``colbert_top_n`` are rescored: MaxSim is a Python matrix
+    product per chunk, and rescoring the whole corpus to reorder a page of
+    results would cost far more than the ordering is worth.
     """
     settings = get_settings()
     if not settings.colbert_enabled or not candidates:
@@ -59,32 +66,59 @@ async def colbert_rerank(
     if not q:
         return candidates
 
-    # MaxSim is a Python matrix product per chunk; the tail of a long candidate
-    # list costs more than its contribution to the final ordering.
-    candidates = candidates[: settings.colbert_top_n]
-    chunk_ids = [c.get("chunk_id") for c in candidates if c.get("chunk_id")]
-    if not chunk_ids:
-        return candidates
+    head = candidates[: settings.colbert_top_n]
+    tail = candidates[settings.colbert_top_n :]
 
+    urls = [r.url for r in head]
     async with session_factory() as session:
         rows = (
             await session.execute(
-                select(ChunkToken.chunk_id, ChunkToken.embedding).where(ChunkToken.chunk_id.in_(chunk_ids))
+                select(ChunkToken.chunk_id, ChunkToken.embedding).where(
+                    ChunkToken.chunk_id.in_(
+                        select(Chunk.id).join(Document, Document.id == Chunk.document_id).where(Document.url.in_(urls))
+                    )
+                )
             )
         ).all()
+        owners = dict(
+            (
+                await session.execute(
+                    select(Chunk.id, Document.url)
+                    .join(Document, Document.id == Chunk.document_id)
+                    .where(Document.url.in_(urls))
+                )
+            ).all()
+        )
 
-    by_chunk: dict[object, list[list[float]]] = {}
+    by_url: dict[str, list[list[float]]] = {}
     for chunk_id, vector in rows:
-        by_chunk.setdefault(chunk_id, []).append(vector)
+        url = owners.get(chunk_id)
+        if url:
+            by_url.setdefault(url, []).append(vector)
 
-    for candidate in candidates:
-        tokens = by_chunk.get(candidate.get("chunk_id"))
-        candidate["colbert_score"] = colbert.maxsim(q, tokens) if tokens else None
+    rescored = []
+    for result in head:
+        # Best-matching chunk stands in for the document. Pooling the whole
+        # document's tokens into one MaxSim would reward length, which is the
+        # opposite of what token-level matching is for.
+        tokens = by_url.get(result.url)
+        score = colbert.maxsim(q, tokens) if tokens else None
+        result.colbert_score = score
+        rescored.append(result)
 
-    # Chunks with no ColBERT vectors keep their existing order behind the scored
-    # ones rather than being dropped: a missing vector is an indexing gap, not
-    # evidence the passage is irrelevant.
-    scored = [c for c in candidates if c.get("colbert_score") is not None]
-    unscored = [c for c in candidates if c.get("colbert_score") is None]
-    scored.sort(key=lambda c: c["colbert_score"], reverse=True)
-    return scored + unscored
+    scored = [r for r in rescored if r.colbert_score is not None]
+    unscored = [r for r in rescored if r.colbert_score is None]
+    # Blend rather than replace, and then sort on the *blended* value. Sorting
+    # on colbert_score while reporting a blended score produced results whose
+    # order contradicted their own scores — the top hit carrying the lowest
+    # score, which breaks any caller that filters or thresholds on score.
+    for result in scored:
+        result.score = result.score + settings.colbert_weight * result.colbert_score
+    scored.sort(key=lambda r: r.score, reverse=True)
+    # Unindexed chunks keep their original order behind scored ones rather than
+    # being dropped: a missing vector is an indexing gap, not evidence that a
+    # passage is irrelevant.
+    out = scored + unscored + tail
+    for position, result in enumerate(out, start=1):
+        result.rank = position
+    return out

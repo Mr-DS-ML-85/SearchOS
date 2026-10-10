@@ -177,6 +177,30 @@ Requires the `images` extra (Pillow). `image_search_available` in the response i
 `false` when it is not installed — that is a degraded mode, not an empty index,
 so check it before concluding there are no images.
 
+## Late interaction (ColBERT)
+
+Off by default (`COLBERT_ENABLED`). Set it and reindex: the feature scores
+queries against per-token vectors, so an index with none has nothing to score.
+
+A single pooled vector per chunk has to compress a whole passage into one point
+in space. MaxSim keeps one vector per token and scores each query token against
+its best matching document token, then sums — relevance becomes "how much of the
+query is covered" rather than "how similar are the centroids".
+
+Storage is the reason it is optional. Measured on this corpus:
+
+    colbertv2.0, 512 tokens x 768d     1536 KB/chunk   10.9 GB
+    projected, 256 tokens x 128d         128 KB/chunk    0.9 GB
+
+So tokens are projected to 128 dimensions with ColBERT's own trained head and
+capped at 256 tokens. `COLBERT_TOP_N` bounds how many candidates are rescored —
+MaxSim is a Python matrix product per chunk, and rescoring the corpus to reorder
+one page of results costs far more than the ordering is worth.
+
+Scores are blended with the cross-encoder (`COLBERT_WEIGHT`) rather than
+replacing them, and the sort uses the blended value, so `score` always decreases
+with `rank`.
+
 ## Federated search
 
 Queries several SearchOS instances at once, for a team that wants its private

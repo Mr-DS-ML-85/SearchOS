@@ -88,6 +88,9 @@ class SearchResult(BaseModel):
     domain: str | None = None
     favicon: str | None = None
     raw: dict[str, Any] | None = None
+    #: Late-interaction score; None when ColBERT is off or the chunks are not
+    #: token-indexed. Internal — not part of the response body.
+    colbert_score: float | None = Field(default=None, exclude=True)
 
 
 class SearchResponse(BaseModel):

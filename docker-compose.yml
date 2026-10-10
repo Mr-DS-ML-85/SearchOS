@@ -183,6 +183,11 @@ services:
       FEDERATED_ENDPOINTS: ${FEDERATED_ENDPOINTS:-}
       FEDERATED_API_KEY: ${FEDERATED_API_KEY:-}
       FEDERATED_TIMEOUT_SECONDS: ${FEDERATED_TIMEOUT_SECONDS:-10}
+      # ColBERT late-interaction reranking. Off by default: it needs the
+      # chunk_tokens index to be populated first, and rescoring is pure
+      # overhead for queries that the cross-encoder already ranks well.
+      COLBERT_ENABLED: ${COLBERT_ENABLED:-0}
+      COLBERT_TOP_N: ${COLBERT_TOP_N:-50}
       BOOTSTRAP_ADMIN_API_KEY: ${BOOTSTRAP_ADMIN_API_KEY:?set BOOTSTRAP_ADMIN_API_KEY in .env}
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
