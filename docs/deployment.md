@@ -93,6 +93,16 @@ middleware that gates requests on readiness. If you need fail-fast behaviour,
 have your client check `status == "ok"`; a gateway with Postgres down returns
 200 from the probes and then fails on the first real query.
 
+`services.models` is `warming` until the startup model warm-up (embedder, then
+cross-encoder, then CLIP when cached) finishes on that worker, and `status` is
+`degraded` meanwhile. Searches that arrive during warm-up are still correct:
+they wait for the model being loaded rather than falling back to heuristic
+scores, so the first queries after a restart are slow, not wrong.
+
+```json
+{"status":"degraded","services":{"postgres":"ok","redis":"ok","renderer":"ok","models":"warming"}}
+```
+
 `/health/live` is the process-level liveness probe used by the Docker
 `HEALTHCHECK`. `/stats` and `/metrics` require an API key when
 `RATE_LIMIT_HEALTH_ENDPOINTS=true` (the default) because `/stats` runs `COUNT(*)`

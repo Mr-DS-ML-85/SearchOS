@@ -104,22 +104,6 @@ async def lifespan(app: FastAPI):
                 logger.info("embedding model warm: %s", settings.embedding_model)
             except Exception as exc:
                 logger.warning("embedding model warm failed: %s: %s", exc.__class__.__name__, exc)
-        # CLIP is never *downloaded* at startup: that pulled ~600MB into the
-        # boot path for a feature most deployments never use. But once the
-        # weights are already on disk, loading lazily made the first image
-        # query on every uvicorn worker pay 4-7s (15s for image-to-image), so
-        # warm it when it is cached locally.
-        if settings.images_enabled:
-            try:
-                from huggingface_hub import try_to_load_from_cache
-
-                from app.search import images as clip
-
-                if isinstance(try_to_load_from_cache(settings.clip_model, "config.json"), str):
-                    if await asyncio.to_thread(clip.warm):
-                        logger.info("CLIP warm: %s", settings.clip_model)
-            except Exception as exc:
-                logger.warning("CLIP warm skipped: %s: %s", exc.__class__.__name__, exc)
         if settings.rerank_enabled and settings.rerank_model:
             try:
                 from app.search.rerank import get_cross_encoder
@@ -136,8 +120,37 @@ async def lifespan(app: FastAPI):
                     )
             except Exception as exc:
                 logger.warning("rerank model warm failed: %s: %s", exc.__class__.__name__, exc)
+        # After the reranker, not before: the reranker is on every search's
+        # path and CLIP only on image search, and CLIP takes ~6s to load.
+        # CLIP is never *downloaded* at startup: that pulled ~600MB into the
+        # boot path for a feature most deployments never use. But once the
+        # weights are already on disk, loading lazily made the first image
+        # query on every uvicorn worker pay 4-7s (15s for image-to-image), so
+        # warm it when it is cached locally.
+        if settings.images_enabled:
+            try:
+                from huggingface_hub import try_to_load_from_cache
 
-    warm = asyncio.create_task(_warm_models())
+                from app.search import images as clip
+
+                if isinstance(try_to_load_from_cache(settings.clip_model, "config.json"), str):
+                    if await asyncio.to_thread(clip.warm):
+                        logger.info("CLIP warm: %s", settings.clip_model)
+            except Exception as exc:
+                logger.warning("CLIP warm skipped: %s: %s", exc.__class__.__name__, exc)
+
+    async def _warm_and_mark() -> None:
+        from app.api.health import MODEL_STATE
+
+        try:
+            await _warm_models()
+        finally:
+            # Reported by /health/ready. Searches that arrive earlier are not
+            # wrong (the model loaders block until the load in progress
+            # finishes); they are just slow, and this says why.
+            MODEL_STATE["state"] = "ok"
+
+    warm = asyncio.create_task(_warm_and_mark())
 
     sampler = asyncio.create_task(_sample_queue_depth())
     try:

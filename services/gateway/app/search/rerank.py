@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 
 from app.config import get_settings
 from app.schemas import SearchResult
@@ -34,21 +35,34 @@ class CrossEncoderReranker:
         self.batch_size = batch_size
         self._model = None
         self._loaded = False
+        self._lock = threading.Lock()
 
     @property
     def loaded(self) -> bool:
         return self._model is not None
 
     def _ensure_model(self):
+        """Load once; a caller arriving mid-load waits for it.
+
+        `_loaded` used to be set *before* the load, with no lock. A search that
+        arrived while the startup warm-up was still loading (a few seconds after
+        every restart) saw `_loaded=True`, got the still-None model, received no
+        scores, and was silently ranked by the heuristic fallback: scores ~0.02,
+        `low_confidence: true`, for a query that normally scores 6+.
+        """
         if self._loaded:
             return self._model
-        self._loaded = True
-        try:
-            from sentence_transformers import CrossEncoder
+        with self._lock:
+            if self._loaded:
+                return self._model
+            try:
+                from sentence_transformers import CrossEncoder
 
-            self._model = CrossEncoder(self.model_name)
-        except Exception:
-            self._model = None
+                self._model = CrossEncoder(self.model_name)
+            except Exception:
+                self._model = None
+            # Set last, so `_loaded` never means "loading".
+            self._loaded = True
         return self._model
 
     def score(self, query: str, pairs: list[tuple[str, str]]) -> list[float]:

@@ -23,6 +23,8 @@ _STARTED_AT = time.monotonic()
 # Readiness probes (Docker HEALTHCHECK, k8s) hit this on every interval; each
 # call previously opened an outbound HTTP request to the renderer.
 _ready_cache: dict[str, Any] = {"at": 0.0, "value": None}
+#: "warming" until the startup model warm-up finishes, per worker process.
+MODEL_STATE: dict[str, str] = {"state": "warming"}
 _ready_ttl = 5.0
 
 
@@ -100,6 +102,13 @@ async def health_ready() -> HealthResponse:
         services["postgres"] = "ok"
     except Exception:
         services["postgres"] = "down"
+        healthy = False
+
+    # Searches during warm-up wait for the models rather than degrade, so this
+    # is reported without failing readiness of the data services; it explains
+    # why the first queries after a restart are slow.
+    services["models"] = MODEL_STATE["state"]
+    if MODEL_STATE["state"] != "ok":
         healthy = False
 
     response = HealthResponse(status="ok" if healthy else "degraded", services=services)

@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 351 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 352 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -239,7 +239,7 @@ The fused reciprocal-rank score is a rank position, not a relevance measure. Lef
 
 **Scores are unbounded logits, not probabilities.** A sigmoid was tried and rejected: it collapses that gap to 0.995–1.0 versus 0.76, far too narrow to cut on. `RERANK_MIN_SCORE` (3.0) and `RERANK_LOW_CONFIDENCE_SCORE` (4.5) sit in the measured gap and must be retuned if `RERANK_MODEL` changes.
 
-If the cross-encoder cannot load, the heuristic reranker is used instead and **the thresholds are skipped** — heuristic scores cannot support one. Embedding and rerank models are loaded during gateway startup, so the first query does not pay for a cold load.
+If the cross-encoder cannot load, the heuristic reranker is used instead and **the thresholds are skipped** — heuristic scores cannot support one. Embedding and rerank models are loaded during gateway startup, so the first query does not pay for a cold load. A search that arrives while they are still loading **waits** for them: the cross-encoder used to report itself loaded before it was, so a search in the first seconds after a restart was silently ranked by the heuristic (scores ~0.02, `low_confidence`). `/health/ready` reports `models: warming` until warm-up finishes.
 
 ### Web fallback cascade
 

@@ -266,3 +266,28 @@ class TestMissReason:
         cache.enabled = True
         out = await cache.lookup("q", "all|y", embedding=[1.0, 0.0])
         assert out[3] == "empty" and out[1] is None
+
+
+class TestModelLoadRace:
+    def test_score_during_warmup_waits_for_the_model(self, monkeypatch):
+        """A search mid-warm-up used to get no scores and fall back to the heuristic."""
+        import threading
+        import time
+        import types
+
+        class SlowCrossEncoder:
+            def __init__(self, name):
+                time.sleep(0.3)
+
+            def predict(self, payload, **kw):
+                return [7.5 for _ in payload]
+
+        monkeypatch.setitem(sys.modules, "sentence_transformers", types.SimpleNamespace(CrossEncoder=SlowCrossEncoder))
+        from app.search.rerank import CrossEncoderReranker
+
+        ce = CrossEncoderReranker("fake")
+        warm = threading.Thread(target=ce.warm)
+        warm.start()
+        time.sleep(0.05)  # warm-up is now mid-load
+        assert ce.score("q", [("title", "snippet")]) == [7.5]
+        warm.join()

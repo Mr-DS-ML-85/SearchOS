@@ -474,7 +474,7 @@ answer to `offset=0&num_results=10`.
 |---|---|
 | `GET /health` | overall status |
 | `GET /health/live` | process alive |
-| `GET /health/ready` | Postgres / Redis / renderer readiness |
+| `GET /health/ready` | Postgres / Redis / renderer readiness, and `models`: `warming` until the startup model warm-up finishes |
 | `GET /metrics` | Prometheus `searchos_*` metrics |
 | `GET /stats` | `documents`, `chunks`, `api_keys`, `ingest_pending`, `uptime_seconds`, plus index completeness: `documents_without_chunks`, `chunks_with_embedding`, `chunks_without_embedding`, `embedding_coverage` (share of documents with at least one vector), `vector_search_available` |
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Sequence
 
 from app.config import get_settings
@@ -10,15 +11,23 @@ class EmbeddingProvider:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._model = None
+        self._lock = threading.Lock()
 
     def _load_model(self):
         if self._model is not None:
             return self._model
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError:
-            raise RuntimeError("sentence-transformers not installed. Run: pip install sentence-transformers") from None
-        self._model = SentenceTransformer(self.settings.embedding_model, device=self.settings.embedding_device)
+        # Without the lock, the startup warm-up and the first queries each
+        # loaded their own copy of the model concurrently.
+        with self._lock:
+            if self._model is not None:
+                return self._model
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError:
+                raise RuntimeError(
+                    "sentence-transformers not installed. Run: pip install sentence-transformers"
+                ) from None
+            self._model = SentenceTransformer(self.settings.embedding_model, device=self.settings.embedding_device)
         return self._model
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
