@@ -18,6 +18,10 @@ class ProviderQuery:
     num_results: int = 20
     offset: int = 0
     skip_when_local_hit: bool = False
+    #: Set when the request itself came from a federated peer. Such a request
+    #: must not federate again, or two peers whose own web tiers are rate-
+    #: limited would forward the query to each other forever.
+    federated_hop: bool = False
 
 
 @dataclass

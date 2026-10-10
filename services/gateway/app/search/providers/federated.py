@@ -39,6 +39,22 @@ logger = get_logger("search.providers.federated")
 # A peer that fails is skipped without a live call for this long.
 _OUTAGE_SECONDS = 30.0
 
+#: Sent on every request to a peer. A gateway receiving it does not federate
+#: again (no `federated` provider, no `federated_web` tier), so peers whose own
+#: web tiers are rate-limited cannot bounce one query between them forever.
+HOP_HEADER = "X-SearchOS-Federated-Hop"
+
+#: mode -> the `sources` values asked of each peer (requested in parallel).
+_MODE_SOURCES = {
+    # The peer's own index. local and vector separately, because older peers
+    # accept no single value meaning "index only".
+    "index": ("local", "vector"),
+    # The peer's whole pipeline, including its live-web cascade.
+    "all": ("all",),
+    # Only the peer's live-web cascade: the rate-limit fallback tier.
+    "web": ("web",),
+}
+
 
 def _describe_failure(exc: Exception, settings) -> str:
     """Turn a peer exception into something an operator can act on.
@@ -68,16 +84,26 @@ def _describe_failure(exc: Exception, settings) -> str:
 
 
 class FederatedProvider(SearchProvider):
-    """Fan out to remote SearchOS gateways and merge with RRF."""
+    """Fan out to remote SearchOS gateways and merge with RRF.
+
+    ``mode`` picks what peers are asked for (see ``_MODE_SOURCES``). The
+    `federated` provider uses "index" (or "all" via FEDERATED_PEER_SOURCES);
+    the `federated_web` cascade tier uses "web".
+    """
 
     name = "federated"
 
-    def __init__(self, endpoints: list[tuple[str, str]], timeout: float = 10.0) -> None:
+    def __init__(
+        self, endpoints: list[tuple[str, str]], timeout: float = 10.0, *, mode: str = "index", name: str | None = None
+    ) -> None:
         # endpoints: [(name, base_url)] — the name prefixes each result's source
         # so a caller can tell which peer answered.
         self.settings = get_settings()
         self.endpoints = endpoints
         self.timeout = timeout
+        self.mode = mode
+        if name:
+            self.name = name
         self._down_until: dict[str, float] = {}
 
     def _live(self) -> list[tuple[str, str]]:
@@ -88,9 +114,14 @@ class FederatedProvider(SearchProvider):
         start = time.monotonic()
         result = ProviderResult(provider=self.name, query=query.q)
 
+        if query.federated_hop:
+            # This request came from a peer; federating again could loop.
+            result.error = f"{self.name}: skipped on a federated hop"
+            return result
+
         peers = self._live()
         if not peers:
-            result.error = "federated: every peer is in outage"
+            result.error = f"{self.name}: every peer is in outage"
             return result
 
         base_params: dict = {
@@ -107,7 +138,10 @@ class FederatedProvider(SearchProvider):
             base_params["exclude_domains"] = query.exclude_domains
 
         settings = self.settings
-        headers = {"Authorization": f"Bearer {settings.federated_api_key or settings.bootstrap_admin_api_key}"}
+        headers = {
+            "Authorization": f"Bearer {settings.federated_api_key or settings.bootstrap_admin_api_key}",
+            HOP_HEADER: "1",
+        }
 
         async def ask(client: httpx.AsyncClient, base: str, sources: str) -> dict:
             resp = await client.get(
@@ -117,17 +151,17 @@ class FederatedProvider(SearchProvider):
             return resp.json()
 
         async def ask_peer(client: httpx.AsyncClient, name: str, base: str) -> tuple[str, list[dict] | None, str]:
-            """A peer's *index* results: its local and vector providers, in parallel.
+            """One peer's results for this provider's mode, its sources in parallel.
 
-            Peers were asked for sources=all, so each one also ran its own
-            live-web cascade: ~5s, the same web this instance already queries,
-            and right at the 5s timeout, so peers were marked degraded on most
-            queries. Federation exists to reach other indexes, not the web
-            twice. local and vector are requested separately because older
-            peers accept no single value meaning "index only".
+            The index mode is the default because asking every peer for
+            sources=all on every query made each run its own ~5s web cascade
+            against a 5s timeout, so peers were degraded on most queries.
+            Pooling web search across peers is still available, either always
+            (FEDERATED_PEER_SOURCES=all) or only when this instance's own web
+            tiers fail (the federated_web cascade tier).
             """
             outcomes = await asyncio.gather(
-                ask(client, base, "local"), ask(client, base, "vector"), return_exceptions=True
+                *(ask(client, base, sources) for sources in _MODE_SOURCES[self.mode]), return_exceptions=True
             )
             rows: list[dict] = []
             seen: set[str] = set()
@@ -170,8 +204,14 @@ class FederatedProvider(SearchProvider):
                     metadata[row["url"]] = row
 
         if not rankings:
-            result.error = "federated: no peer returned results: " + "; ".join(failures)
             result.latency_ms = (time.monotonic() - start) * 1000
+            if failures:
+                result.error = f"{self.name}: no peer returned results: " + "; ".join(failures)
+            else:
+                # Every peer answered 200 with nothing. That is an empty answer,
+                # not a failure: reported as `degraded`, it made a healthy peer
+                # with no matching documents look broken on most queries.
+                result.raw = {"empty": True, "peers": [n for n, _ in peers]}
             return result
 
         merged = _rrf(rankings, k=self.settings.rrf_k)
@@ -183,7 +223,7 @@ class FederatedProvider(SearchProvider):
                     title=peer_row.get("title") or url,
                     url=url,
                     snippet=(peer_row.get("snippet") or "")[:1200],
-                    source=f"federated:{peer}",
+                    source=f"{self.name}:{peer}",
                     score=score,
                     rank=rank,
                     domain=domain_of(url),
@@ -221,4 +261,20 @@ def build_federated(settings=None) -> FederatedProvider | None:
         peers.append((name.strip(), url.strip()))
     if not peers:
         return None
-    return FederatedProvider(peers, timeout=cfg.federated_timeout_seconds)
+    if cfg.federated_peer_sources == "all":
+        # The peer runs its own web cascade on every query; 5s is not enough.
+        return FederatedProvider(peers, timeout=cfg.federated_web_timeout_seconds, mode="all")
+    return FederatedProvider(peers, timeout=cfg.federated_timeout_seconds, mode="index")
+
+
+def build_federated_web(settings=None) -> FederatedProvider | None:
+    """The `federated_web` cascade tier: peers run the web search for us."""
+    cfg = settings or get_settings()
+    if not cfg.federated_web_fallback:
+        return None
+    base = build_federated(cfg)
+    if base is None:
+        return None
+    return FederatedProvider(
+        base.endpoints, timeout=cfg.federated_web_timeout_seconds, mode="web", name="federated_web"
+    )

@@ -44,8 +44,9 @@ NOT_FOR_AGENTS = {
 #: MCP argument name -> gateway parameter name.
 RENAMED = {"search": {"query": "q"}, "search_images": {"query": "q"}}
 #: Gateway parameters an MCP caller does not need: auth comes from the MCP
-#: server's configured key, and `freshness` is an alias of `time_range`.
-NOT_ARGUMENTS = {"authorization", "x-api-key", "freshness"}
+#: server's configured key, `freshness` is an alias of `time_range`, and the
+#: federation hop header is sent only by one SearchOS gateway to another.
+NOT_ARGUMENTS = {"authorization", "x-api-key", "freshness", "x-searchos-federated-hop"}
 
 
 @pytest.fixture(scope="module")

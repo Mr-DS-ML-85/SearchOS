@@ -114,6 +114,7 @@ order and the first that answers wins:
 3. **Tavily** — free without any account via `X-Tavily-Access-Mode: keyless`
 4. **Exa** — no key needed over its hosted MCP server; the REST API returns 402 without a funded key
 5. **Jina** — requires a key; `s.jina.ai` returns 401 without one
+6. **federated_web** — only with `FEDERATED_ENDPOINTS` and `FEDERATED_WEB_FALLBACK` (default on): peers run the web search when every tier above is failing or rate-limited, pooling a group's web quota. Skipped on requests that themselves came from a peer. See [Pooling web search across peers](api.md#pooling-web-search-across-peers-rate-limits).
 
 Exa is reached over its hosted **MCP** server (`mcp.exa.ai/mcp`), not its REST
 API: REST returns `402 x402 payment-required` without a funded key, while the

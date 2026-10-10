@@ -190,6 +190,12 @@ services:
       FEDERATED_ENDPOINTS: ${FEDERATED_ENDPOINTS:-}
       FEDERATED_API_KEY: ${FEDERATED_API_KEY:-}
       FEDERATED_TIMEOUT_SECONDS: ${FEDERATED_TIMEOUT_SECONDS:-10}
+      # index (peers' own indexes, fast) | all (peers also search the web on
+      # every query). See docs/api.md "Federated search".
+      FEDERATED_PEER_SOURCES: ${FEDERATED_PEER_SOURCES:-index}
+      # Last web-cascade tier: peers run the web search when ours are rate-limited.
+      FEDERATED_WEB_FALLBACK: ${FEDERATED_WEB_FALLBACK:-true}
+      FEDERATED_WEB_TIMEOUT_SECONDS: ${FEDERATED_WEB_TIMEOUT_SECONDS:-20}
       # ColBERT late-interaction reranking. Off by default: it needs the
       # chunk_tokens index to be populated first, and rescoring is pure
       # overhead for queries that the cross-encoder already ranks well.

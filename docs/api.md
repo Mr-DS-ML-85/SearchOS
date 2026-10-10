@@ -135,7 +135,7 @@ the same query.
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | — | search query (required) |
-| `sources` | `all` \| `local` \| `vector` \| `web` \| `searxng` \| `google` \| `tavily` \| `exa` \| `jina` \| `federated` | `all` | providers to query. `web` is the whole fallback cascade; a tier name pins one upstream and errors instead of falling back. `google` exists only when `PROXIFY_URL` is set |
+| `sources` | `all` \| `local` \| `vector` \| `web` \| `searxng` \| `google` \| `tavily` \| `exa` \| `jina` \| `federated` \| `federated_web` | `all` | providers to query. `web` is the whole fallback cascade; a tier name pins one upstream and errors instead of falling back. `google` exists only when `PROXIFY_URL` is set |
 | `num_results` | int 1–50 | 10 | results to return |
 | `language` | ISO 639-1, e.g. `en`, `fr`, `fr-CA` | — | indexed results are restricted to documents detected as that language; web tiers receive it as a locale. Documents whose language could not be detected are excluded, and an unknown code matches nothing |
 | `country` | ISO 3166, e.g. `ca` | — | combined with `language` into a web locale (`fr` + `ca` → `fr-CA`) and sent to Google as `gl`. Indexed documents carry no country, so it has no effect on local/vector results |
@@ -416,11 +416,33 @@ FEDERATED_ENDPOINTS=team-a=http://peer-a:8000,shared=http://shared:8000
 means the gateway itself, not the host — use a compose service name or
 `host.docker.internal`.
 
-Each peer is asked for its **index only** (its `local` and `vector` providers, in
-parallel), and all peers are queried concurrently. Peers used to be asked for
-`sources=all`, so each ran its own live-web cascade: ~5s, the same web this
-instance already queries, and right at `FEDERATED_TIMEOUT_SECONDS` (5), so peers
-were degraded on most queries. Measured after the change: 671ms, not degraded.
+### Pooling web search across peers (rate limits)
+
+A group of self-hosters can federate to share each other's web quota, so no
+single instance is rate-limited. Three settings control what peers are asked for:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `FEDERATED_PEER_SOURCES` | `index` | `index`: a federated query asks each peer for its own index only (`local` + `vector`, in parallel); fast. `all`: peers also run their live-web cascade on **every** federated query (~5s+, uses `FEDERATED_WEB_TIMEOUT_SECONDS`). |
+| `FEDERATED_WEB_FALLBACK` | `true` | Adds a `federated_web` tier at the **end** of the web cascade: when every one of this instance's own web tiers (SearXNG, Google, Tavily, Exa, Jina) is failing or rate-limited, peers run the web search instead. Costs nothing while the local tiers work. Pin it with `sources=federated_web`. |
+| `FEDERATED_WEB_TIMEOUT_SECONDS` | `20` | Budget for a peer's web search (`federated_web`, and `all` mode). |
+
+Web results a peer returns are saved into this instance's index like any other
+web result, so a rate-limited instance still learns from the query.
+
+**Loop guard.** Every request to a peer carries `X-SearchOS-Federated-Hop: 1`. A
+gateway receiving it runs the query **without** federation (no `federated`
+provider, no `federated_web` tier), and caches that answer separately. Without
+it, two peers whose own web tiers are both rate-limited would forward one query
+back and forth forever.
+
+All peers are queried concurrently (they used to be queried one after another).
+
+**What was wrong before.** Peers were asked for `sources=all` on every query, so
+each ran its own ~5s web cascade. The peer answered 200, but with no results
+from its small index, and that empty answer was reported as a failure (`degraded:
+["federated"]`). An empty answer from a healthy peer is now reported in
+`empty_providers`, and index-only mode measured 671ms instead of 4.9–6.5s.
 
 Results carry `source: federated:<peer>` so callers can see which index answered,
 and merge with Reciprocal Rank Fusion, so a URL that several peers return scores

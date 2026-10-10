@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query
 
 from app.api.deps import current_api_key
 from app.config import get_settings
@@ -91,6 +91,9 @@ async def search(
     # was unreachable. Declared explicitly here so they arrive on a GET.
     domains: Annotated[list[str] | None, Query()] = None,
     exclude_domains: Annotated[list[str] | None, Query()] = None,
+    # Set by a federated peer forwarding a query here. Such a request is not
+    # federated again, so rate-limited peers cannot bounce it between them.
+    x_searchos_federated_hop: Annotated[str | None, Header()] = None,
 ) -> SearchResponse:
     start = time.monotonic()
 
@@ -113,7 +116,7 @@ async def search(
     orchestrator = build_orchestrator()
 
     try:
-        response = await orchestrator.search(merged)
+        response = await orchestrator.search(merged, federated_hop=bool(x_searchos_federated_hop))
         background_tasks.add_task(
             get_security_service().log_usage,
             api_key,

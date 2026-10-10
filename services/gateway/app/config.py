@@ -242,6 +242,18 @@ class Settings(BaseSettings):
     federated_endpoints: str = ""
     federated_api_key: str = ""
     federated_timeout_seconds: float = 5.0
+    #: What a federated query asks each peer for. "index": the peer's local and
+    #: vector providers only (fast, the default). "all": the peer's whole
+    #: pipeline including its live-web cascade, on every query, which spreads
+    #: web load across the group at the cost of ~5s+ per query (uses
+    #: federated_web_timeout_seconds).
+    federated_peer_sources: Literal["index", "all"] = "index"
+    #: Append a `federated_web` tier to the end of the web cascade: when every
+    #: one of this instance's own web tiers is failing or rate-limited, peers
+    #: run the web search instead. A group of self-hosters can pool their web
+    #: quotas without each query paying for it.
+    federated_web_fallback: bool = True
+    federated_web_timeout_seconds: float = 20.0
     extract_cache_ttl_seconds: int = 3600
 
     extract_max_bytes: int = 5242880

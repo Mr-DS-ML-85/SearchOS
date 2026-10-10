@@ -416,3 +416,96 @@ class TestHtmlEntitiesDecoded:
         resp = await orch.search(SearchRequest(q="tuning", cache=False))
         assert resp.results[0].title == "Tuning: 10 Parameters & Tips"
         assert resp.results[0].snippet == "a <b> 'c'"
+
+
+class TestFederationModes:
+    def _client(self, monkeypatch, asked, results=True):
+        import httpx
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                src = asked[-1]["sources"]
+                return {"results": [{"url": f"https://p.com/{src}", "title": "t", "snippet": "s"}] if results else []}
+
+        class Client:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *e):
+                return False
+
+            async def get(self, url, params=None, headers=None):
+                asked.append({"sources": params["sources"], "hop": headers.get("X-SearchOS-Federated-Hop")})
+                return Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", Client)
+
+    async def test_web_mode_asks_peers_to_search_the_web_and_marks_the_hop(self, monkeypatch):
+        """Pooling web quota across self-hosters: peers run the web search for us."""
+        from app.search.providers.federated import FederatedProvider
+
+        asked: list = []
+        self._client(monkeypatch, asked)
+        p = FederatedProvider([("a", "http://a")], mode="web", name="federated_web")
+        out = await p.search(ProviderQuery(q="x"))
+        assert asked == [{"sources": "web", "hop": "1"}]
+        assert out.results[0].source == "federated_web:a"
+
+    async def test_hop_request_never_federates_again(self, monkeypatch):
+        """Two rate-limited peers would otherwise forward one query back and forth."""
+        from app.search.providers.federated import FederatedProvider
+
+        asked: list = []
+        self._client(monkeypatch, asked)
+        out = await FederatedProvider([("a", "http://a")], mode="web").search(ProviderQuery(q="x", federated_hop=True))
+        assert asked == [] and "hop" in out.error
+
+    async def test_cascade_skips_federated_web_on_a_hop(self):
+        from app.search.providers.cascade import CascadeProvider
+
+        class Tier:
+            def __init__(self, name):
+                self.name, self.called = name, False
+
+            async def search(self, query):
+                self.called = True
+                return ProviderResult(provider=self.name, query=query.q, error="down")
+
+        own, peers = Tier("searxng"), Tier("federated_web")
+        await CascadeProvider([own, peers]).search(ProviderQuery(q="x", federated_hop=True))
+        assert own.called and not peers.called
+
+    def test_orchestrator_excludes_federation_on_a_hop(self, cache):
+        class P:
+            def __init__(self, name):
+                self.name = name
+
+        orch = SearchOrchestrator(providers={n: P(n) for n in ("local", "federated", "federated_web")}, cache=cache)
+        assert {p.name for p in orch.select_providers("all", federated_hop=True)} == {"local"}
+        assert orch.select_providers("federated", federated_hop=True) == []
+
+    async def test_empty_answer_from_healthy_peer_is_not_degraded(self, monkeypatch):
+        from app.search.providers.federated import FederatedProvider
+
+        asked: list = []
+        self._client(monkeypatch, asked, results=False)
+        out = await FederatedProvider([("a", "http://a")]).search(ProviderQuery(q="x"))
+        assert out.error is None and out.raw["empty"] is True
+
+    def test_peer_sources_all_uses_the_web_timeout(self, monkeypatch):
+        from app.config import get_settings
+        from app.search.providers.federated import build_federated, build_federated_web
+
+        s = get_settings()
+        monkeypatch.setattr(s, "federated_endpoints", "a=http://a")
+        monkeypatch.setattr(s, "federated_peer_sources", "all")
+        fed = build_federated(s)
+        assert fed.mode == "all" and fed.timeout == s.federated_web_timeout_seconds
+        web = build_federated_web(s)
+        assert web.name == "federated_web" and web.mode == "web"

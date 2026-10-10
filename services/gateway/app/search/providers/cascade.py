@@ -122,6 +122,10 @@ class CascadeProvider(SearchProvider):
         tier_latency: dict[str, float] = {}
 
         for tier in self.tiers:
+            if query.federated_hop and tier.name == "federated_web":
+                # The request came from a peer: forwarding it to peers again
+                # could bounce it between two rate-limited instances forever.
+                continue
             attempted.append(tier.name)
             tier_start = time.monotonic()
             try:
@@ -213,6 +217,15 @@ def build_cascade(settings=None) -> CascadeProvider | None:
     # r.jina.ai (the reader) is open. Do not add an unkeyed search tier.
     if cfg.jina_api_key:
         tiers.append(JinaProvider(cfg.jina_api_key, cfg.jina_timeout_seconds))
+    # Last resort: when every one of this instance's own web tiers is failing or
+    # rate-limited, peers run the web search instead. Pools a group's web quota
+    # without any query paying for it while the local tiers work.
+    if cfg.federated_peers and cfg.federated_web_fallback:
+        from app.search.providers.federated import build_federated_web
+
+        federated_web = build_federated_web(cfg)
+        if federated_web is not None:
+            tiers.append(federated_web)
     if cfg.proxify_url:
         from app.search.providers.google import GoogleProvider, build_client
 

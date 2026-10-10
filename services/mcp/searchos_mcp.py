@@ -147,13 +147,16 @@ def _search_schema() -> dict[str, Any]:
                     "exa",
                     "jina",
                     "federated",
+                    "federated_web",
                 ],
                 "description": (
                     "which providers to query. 'web' is the whole fallback cascade "
                     "(SearXNG -> Google -> Tavily -> Exa -> Jina); the tier names pin one "
                     "upstream and error rather than silently falling back ('google' is "
                     "Google via the Proxify VM browser, ~12s, only when PROXIFY_URL is set); "
-                    "'federated' queries the configured SearchOS peers."
+                    "'federated' queries the configured SearchOS peers' indexes; "
+                    "'federated_web' asks those peers to run the web search (the last "
+                    "cascade tier, used when this instance's own web tiers are rate-limited)."
                 ),
             },
             "cursor": {

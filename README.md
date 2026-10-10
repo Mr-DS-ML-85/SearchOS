@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 360 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 366 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -296,7 +296,7 @@ Query several instances at once and merge with RRF, so a URL that several indepe
 FEDERATED_ENDPOINTS=team-a=http://peer-a:8000,shared=http://shared:8000
 ```
 
-**Peer URLs resolve from inside the gateway container**, so `127.0.0.1:8001` is the gateway itself, not the host — use a compose service name or `host.docker.internal`. A peer that errors is recorded in `degraded` and then skipped without a live call for 30s, so one dead peer cannot add its timeout to every query. Peers are asked for their **index only** (local + vector) and queried concurrently; asking for `sources=all` made each peer run its own ~5s web search, which timed out at 5s (671ms after the fix).
+**Peer URLs resolve from inside the gateway container**, so `127.0.0.1:8001` is the gateway itself, not the host — use a compose service name or `host.docker.internal`. A peer that errors is recorded in `degraded` and then skipped without a live call for 30s, so one dead peer cannot add its timeout to every query. Peers are queried concurrently and, by default, asked for their **index only** (local + vector; 671ms instead of 4.9–6.5s). To **pool web search across a group of self-hosters** and avoid rate limits, `FEDERATED_WEB_FALLBACK` (on by default) adds a last web-cascade tier, `federated_web`, that has peers run the web search when this instance's own tiers are rate-limited; `FEDERATED_PEER_SOURCES=all` makes peers search the web on every federated query instead. A hop header stops peers from forwarding a query back and forth. See [docs/api.md](docs/api.md#pooling-web-search-across-peers-rate-limits).
 
 **A peer must point at a different database to be worth anything.** A peer sharing your Postgres returns your own index over HTTP, so its results duplicate yours exactly and federation adds latency without coverage. The test peer uses `searchos_peer`, its own database with its own gateway, worker and Redis DB, seeded with different documents — 9 results where the local index has 2, overlapping on 1.
 
@@ -331,7 +331,7 @@ Full reference in [docs/api.md](docs/api.md).
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | — | search query (required) |
-| `sources` | `all`\|`local`\|`vector`\|`web`\|`searxng`\|`google`\|`tavily`\|`exa`\|`jina`\|`federated` | `all` | which providers to query; `web` is the whole cascade, the others pin one upstream |
+| `sources` | `all`\|`local`\|`vector`\|`web`\|`searxng`\|`google`\|`tavily`\|`exa`\|`jina`\|`federated`\|`federated_web` | `all` | which providers to query; `web` is the whole cascade, the others pin one upstream |
 | `num_results` | int 1–50 | 10 | results to return |
 | `language` | ISO 639-1, e.g. `en`, `fr` | — | indexed results limited to documents detected as that language; sent to web tiers as a locale |
 | `country` | ISO 3166, e.g. `ca` | — | combined with `language` into a web locale (`fr-CA`); no effect on indexed results, which carry no country |
@@ -484,6 +484,8 @@ Everything is environment-driven (`.env`). Key variables:
 | `BACKFILL_INTERVAL_SECONDS` | `120` | idle re-check for documents without chunks (new web snippets) |
 | `FEDERATED_ENDPOINTS` | — | comma-separated `name=url` peers, e.g. `team-a=http://peer-a:8000` |
 | `FEDERATED_API_KEY` | — | bearer token sent to peers |
+| `FEDERATED_PEER_SOURCES` | `index` | `index` (peers' indexes) or `all` (peers also search the web every query) |
+| `FEDERATED_WEB_FALLBACK` / `FEDERATED_WEB_TIMEOUT_SECONDS` | `true` / `20` | `federated_web` cascade tier: peers run the web search when ours are rate-limited |
 | `DEDUPE_NEAR_DUPLICATES` | `true` | collapse SimHash near-duplicates at query time |
 | `SEMANTIC_CACHE_MAX_AGE_SECONDS` | `330` | paraphrase-entry lifetime; clamped to the result-cache TTL |
 | `SEMANTIC_CACHE_*` | see `.env.example` | paraphrase-aware query cache; entries live ~330s, clamped to the result-cache TTL |

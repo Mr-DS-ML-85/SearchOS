@@ -139,16 +139,18 @@ class SearchOrchestrator:
                 cross_encoder=(get_cross_encoder() if self.settings.rerank_model else None),
             )
 
-    def select_providers(self, sources: str) -> list[SearchProvider]:
+    def select_providers(self, sources: str, *, federated_hop: bool = False) -> list[SearchProvider]:
+        # A request forwarded by a peer must not be federated again.
+        excluded = {"federated", "federated_web"} if federated_hop else set()
         if sources == "all":
             # Everything except the tiers the `web` cascade already queries.
             # Including them would double every live-web request.
             members = getattr(self, "cascade_members", set())
-            return [p for name, p in self.providers.items() if name not in members]
+            return [p for name, p in self.providers.items() if name not in members and name not in excluded]
         provider = self.providers.get(sources)
-        return [provider] if provider else []
+        return [provider] if provider and sources not in excluded else []
 
-    async def search(self, req: SearchRequest) -> SearchResponse:
+    async def search(self, req: SearchRequest, *, federated_hop: bool = False) -> SearchResponse:
         start = time.monotonic()
         metrics = get_metrics()
         cache = self.cache
@@ -183,6 +185,8 @@ class SearchOrchestrator:
             req.time_range,
             list(parsed.phrases),
             list(parsed.filetypes),
+            # A hop request runs without federation, so its answer differs.
+            federated_hop,
         ]
         cursor_fingerprint = hashlib.sha256(
             json.dumps([query_text, *filter_identity], default=str).encode()
@@ -222,6 +226,9 @@ class SearchOrchestrator:
             # Same reason as the cursor fingerprint: the two settings produce
             # different orderings of the same documents.
             colbert_on,
+            # A peer's (hop) request runs without federation; its page must
+            # not be served to a local caller, or the reverse.
+            federated_hop,
         )
 
         near_miss: dict = {}
@@ -321,7 +328,7 @@ class SearchOrchestrator:
                 )
 
             metrics.cache_misses.inc()
-        providers = self.select_providers(req.sources)
+        providers = self.select_providers(req.sources, federated_hop=federated_hop)
         if not providers:
             from app.errors import ProviderError
 
@@ -341,6 +348,7 @@ class SearchOrchestrator:
             num_results=min(max(window, 20) * 2, self.settings.search_max_candidates),
             offset=0,
             skip_when_local_hit=(req.sources == "all" and req.time_range == "all"),
+            federated_hop=federated_hop,
         )
 
         tasks = [provider.search(query) for provider in providers]
