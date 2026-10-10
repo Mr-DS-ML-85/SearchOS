@@ -145,6 +145,12 @@ class Settings(BaseSettings):
     # Empty and low-confidence responses expire fast so a transient miss does
     # not pin itself for the full TTL.
     search_negative_cache_ttl_seconds: int = 30
+    # Reuse a previous answer for a differently-worded but near-identical
+    # query. Deliberately conservative: 0.92 already matches paraphrases and
+    # a higher threshold stops catching them, while 0.85 starts matching
+    # merely-related questions and would answer them with the wrong result.
+    semantic_cache_enabled: bool = True
+    semantic_cache_threshold: float = 0.92
     extract_cache_ttl_seconds: int = 3600
 
     extract_max_bytes: int = 5242880

@@ -15,6 +15,7 @@ from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.search.fusion import reciprocal_rank_fusion
 from app.search.operators import parse as parse_query
 from app.search.rerank import Reranker, get_cross_encoder
+from app.search.semantic_cache import SemanticCache
 from app.search.simhash import near_duplicate, to_signed
 
 
@@ -105,12 +106,15 @@ class SearchOrchestrator:
     cache: Cache | None = None
     reranker: Reranker | None = None
     settings: Settings | None = None
+    semantic_cache: SemanticCache | None = None
 
     def __post_init__(self) -> None:
         if self.settings is None:
             self.settings = get_settings()
         if self.cache is None:
             self.cache = get_cache()
+        if self.semantic_cache is None:
+            self.semantic_cache = SemanticCache()
         if self.reranker is None:
             self.reranker = Reranker(
                 enabled=self.settings.rerank_enabled,
@@ -167,6 +171,12 @@ class SearchOrchestrator:
         )
 
         if req.cache:
+            semantic = await self.semantic_cache.lookup(query_text)
+            if semantic[0] is not None:
+                semantic[0]["query"] = req.q
+                semantic[0]["took_ms"] = int((time.monotonic() - start) * 1000)
+                return SearchResponse(**semantic[0])
+
             cached = await cache.get(cache_key_str)
             if cached is not None:
                 metrics.cache_hits.inc()
@@ -297,6 +307,11 @@ class SearchOrchestrator:
             weak = not results or low_confidence
             ttl = self.settings.search_negative_cache_ttl_seconds if weak else self.settings.search_cache_ttl_seconds
             await cache.set(cache_key_str, response.model_dump(), ttl_seconds=ttl)
+            if results and not weak:
+                try:
+                    await self.semantic_cache.remember(query_text, cache_key_str)
+                except Exception:
+                    pass
 
         try:
             await cache.record_query(req.q, results=len(results))

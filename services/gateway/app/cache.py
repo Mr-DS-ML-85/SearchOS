@@ -146,6 +146,24 @@ class Cache:
         except Exception:
             return 0
 
+    async def lrange(self, key: str, start: int, stop: int) -> list[str]:
+        try:
+            return list(await self._client.lrange(key, start, stop))
+        except Exception:
+            return []
+
+    async def ltrim(self, key: str, start: int, stop: int) -> bool:
+        try:
+            return bool(await self._client.ltrim(key, start, stop))
+        except Exception:
+            return False
+
+    async def expire(self, key: str, ttl_seconds: int) -> bool:
+        try:
+            return bool(await self._client.expire(key, ttl_seconds))
+        except Exception:
+            return False
+
     async def lpop(self, key: str) -> str | None:
         try:
             return await self._client.lpop(key)

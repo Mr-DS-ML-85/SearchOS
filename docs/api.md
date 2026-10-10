@@ -71,6 +71,8 @@ sigmoid collapses that separation to a range too narrow to threshold.
 | `top_score` | best score in this page; `null` when nothing cleared the threshold |
 | `low_confidence` | `true` when no result cleared the low-confidence bar |
 | `min_score` | the cutoff actually applied |
+| `semantic_cache_hit` | the answer was reused from a near-identical earlier query |
+| `semantic_cache_match` / `semantic_cache_similarity` | which query was reused, and how similar |
 | `degraded` | providers or cascade tiers that errored |
 
 When `low_confidence` is `true` the corpus most likely does not cover the
@@ -166,6 +168,25 @@ Accepted inline in `q`, stripped before anything reaches the index:
 
 Operators are merged with the `domains` / `exclude_domains` parameters rather
 than replacing them. `operators_applied` in the response echoes what was parsed.
+
+## Caching
+
+Two layers. The exact-match cache keys on the full query and survives process
+restarts. The semantic cache embeds the query and reuses a recent answer for a
+*differently worded* but near-identical question, which is the common case for
+agents that rephrase.
+
+Measured with `bge-small-en-v1.5`: paraphrases of an answered query score
+0.945–0.958 and are reused; a different topic scores ~0.50 and is not. The
+threshold is `SEMANTIC_CACHE_THRESHOLD`, default 0.92 — high enough that a
+merely-related question cannot borrow an unrelated answer. Verified that
+"rust tokio async runtime" and "rust tokio runtime" share an answer (0.945) while
+"vector database search" does not.
+
+Responses served from the semantic cache carry `semantic_cache_hit`,
+`semantic_cache_match` and `semantic_cache_similarity` so a caller can tell a
+reused answer from a freshly retrieved one. Empty and low-confidence answers are
+never remembered — a weak answer is the one most likely to be wrong.
 
 ## Pagination
 

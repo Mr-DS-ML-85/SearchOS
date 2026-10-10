@@ -51,6 +51,10 @@ class Metrics:
             buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
         )
         self.documents_indexed = Counter("searchos_documents_indexed_total", "Documents indexed")
+        self.semantic_cache_hits = Counter(
+            "searchos_semantic_cache_hits_total",
+            "Searches answered from a near-identical earlier query",
+        )
         self.deduped_near_duplicates = Counter(
             "searchos_deduped_near_duplicates_total",
             "Results dropped because a near-identical document was already ranked higher",

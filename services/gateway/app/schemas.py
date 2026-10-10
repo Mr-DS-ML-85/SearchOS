@@ -123,6 +123,15 @@ class SearchResponse(BaseModel):
         default_factory=list,
         description="Query completions; only populated when `include_suggestions` is set.",
     )
+    semantic_cache_hit: bool = Field(
+        False,
+        description="True when the answer was reused from a near-identical earlier query",
+    )
+    semantic_cache_match: str | None = Field(
+        None,
+        description="The earlier query whose result was reused, when semantic_cache_hit is true",
+    )
+    semantic_cache_similarity: float | None = Field(None, description="Cosine similarity of the reuse")
     operators_applied: dict[str, Any] | None = Field(
         None,
         description="Operators parsed out of `q` (site/filetype/phrase/negation), or null.",
