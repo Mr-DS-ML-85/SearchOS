@@ -11,6 +11,12 @@ from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 logger = get_logger("search.providers.cascade")
 
 
+def _bare(host: str) -> str:
+    """Lowercase a hostname and drop a leading www. so filters match subdomains."""
+    h = (host or "").strip().lower().rstrip(".")
+    return h[4:] if h.startswith("www.") else h
+
+
 class CascadeProvider(SearchProvider):
     """Try web providers in order; the first one that answers wins.
 
@@ -43,6 +49,34 @@ class CascadeProvider(SearchProvider):
             "all web providers failed; cooling down for %ds before retrying the chain",
             self.cooldown_seconds,
         )
+
+    @staticmethod
+    def _enforce_domains(query: ProviderQuery, results: list) -> list:
+        """Apply the caller's domain constraints to whatever a tier returned.
+
+        Not every upstream honours them: Jina's search endpoint has no domain
+        parameter at all, and Exa's MCP server returned undsci.berkeley.edu
+        alongside en.wikipedia.org despite includeDomains. Trusting each tier
+        meant `domains=wikipedia.org` silently returned dictionaries and other
+        unrelated sites, which the e2e suite caught.
+        """
+        if not query.domains and not query.exclude_domains:
+            return results
+        included = [_bare(d) for d in (query.domains or []) if d]
+        excluded = [_bare(d) for d in (query.exclude_domains or []) if d]
+
+        def host_of(url: str) -> str:
+            return _bare(url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0])
+
+        kept = []
+        for r in results:
+            host = host_of(getattr(r, "url", "") or "")
+            if excluded and any(host == e or host.endswith("." + e) for e in excluded):
+                continue
+            if included and not any(host == i or host.endswith("." + i) for i in included):
+                continue
+            kept.append(r)
+        return kept
 
     async def search(self, query: ProviderQuery) -> ProviderResult:
         start = time.monotonic()
@@ -80,12 +114,14 @@ class CascadeProvider(SearchProvider):
                     get_metrics().provider_errors.labels(provider=tier.name, kind="http").inc()
                     continue
 
-                if not outcome.results:
-                    # Answered, but empty. Treat as a miss and keep descending.
-                    failures.append(f"{tier.name}: no results")
+                results = self._enforce_domains(query, outcome.results)
+                if not results:
+                    # Either nothing matched, or the domain filter removed
+                    # everything. Treat as a miss and keep descending.
+                    failures.append(f"{tier.name}: no results after domain filter")
                     continue
 
-                combined.results = outcome.results
+                combined.results = results
                 # Clear any cooldown from an earlier outage. Without this the
                 # flag survives until its original expiry even though the chain
                 # is healthy again, so a recovered service stays muted.

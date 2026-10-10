@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from app.cache import Cache, cache_key, get_cache
 from app.config import Settings, get_settings
@@ -10,7 +11,26 @@ from app.metrics import get_metrics
 from app.schemas import SearchRequest, SearchResponse, SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
 from app.search.fusion import reciprocal_rank_fusion
+from app.search.operators import parse as parse_query
 from app.search.rerank import Reranker, get_cross_encoder
+
+
+def _filter_by_filetype(results: list, filetypes: list[str]) -> list:
+    """Keep results whose URL ends in one of the requested extensions.
+
+    Extensionless URLs are kept: an indexed document has no extension in its
+    URL, so dropping those would empty the local index for any filetype query.
+    A filetype query against the local index therefore behaves as a soft filter.
+    """
+    wanted = {f.lstrip(".").lower() for f in filetypes}
+    kept = []
+    for r in results:
+        path = urlsplit(r.url or "").path
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+        if ext and ext not in wanted:
+            continue
+        kept.append(r)
+    return kept
 
 
 @dataclass
@@ -43,22 +63,30 @@ class SearchOrchestrator:
         start = time.monotonic()
         metrics = get_metrics()
         cache = self.cache
-        # One deep page is fetched; pagination is applied exactly once, below.
-        # offset is clamped so a client cannot force Postgres to walk an
-        # arbitrarily large OFFSET on every request.
+
+        # Operators are stripped before anything reaches the index, so
+        # `filetype:pdf` does not match documents literally containing "filetype".
+        parsed = parse_query(req.q)
+        query_text = parsed.text or req.q
+        domains = list(parsed.include_domains) + list(req.domains or [])
+        exclude_domains = list(parsed.exclude_domains) + list(req.exclude_domains or [])
+        if parsed.negated:
+            query_text = f"{query_text} {' '.join('-' + t for t in parsed.negated)}".strip()
+
         offset = min(req.offset, self.settings.search_max_offset)
         window = offset + req.num_results
         cache_key_str = cache_key(
             "search",
-            req.q.lower().strip(),
+            query_text.lower().strip(),
             req.sources,
             window,
             req.language,
             req.country,
             req.time_range,
             req.freshness,
-            tuple(sorted(req.domains or ())),
-            tuple(sorted(req.exclude_domains or ())),
+            tuple(sorted(domains)),
+            tuple(sorted(exclude_domains)),
+            tuple(parsed.phrases),
         )
 
         if req.cache:
@@ -81,12 +109,12 @@ class SearchOrchestrator:
                 "Enable the local index or set SEARXNG_URL."
             )
         query = ProviderQuery(
-            q=req.q,
+            q=query_text,
             language=req.language,
             country=req.country,
             time_range=req.time_range,
-            domains=req.domains,
-            exclude_domains=req.exclude_domains,
+            domains=domains or None,
+            exclude_domains=exclude_domains or None,
             # Candidates for the whole requested window, capped. Providers must
             # NOT receive req.offset — the orchestrator owns pagination.
             num_results=min(max(window, 20) * 2, self.settings.search_max_candidates),
@@ -124,7 +152,7 @@ class SearchOrchestrator:
 
         # Never let the reranker cap results below what the caller asked for.
         self.reranker.top_k = max(self.settings.rerank_top_k, window)
-        ranked = await self.reranker.rerank_async(req.q, fused)
+        ranked = await self.reranker.rerank_async(query_text, fused)
 
         # Drop rows the reranker scored as irrelevant. Only meaningful once a
         # cross-encoder produced the scores: the heuristic keeps every fused
@@ -135,6 +163,10 @@ class SearchOrchestrator:
             total = len(ranked)
 
         low_confidence = not ranked or ranked[0].score < self.settings.rerank_low_confidence_score
+
+        if parsed.filetypes:
+            ranked = _filter_by_filetype(ranked, parsed.filetypes)
+            total = len(ranked)
 
         # The one and only pagination slice.
         results = ranked[offset : offset + req.num_results]

@@ -31,6 +31,8 @@ class RobotsChecker:
     _cache_lock = asyncio.Lock()
     cache_ttl_seconds: float = 3600.0
     max_cached_origins: int = 512
+    _delay_cache: dict[str, tuple[float, float | None]] = {}
+    _delay_ttl_seconds: float = 3600.0
 
     def __init__(self, user_agent: str | None = None) -> None:
         self.settings = get_settings()
@@ -73,6 +75,77 @@ class RobotsChecker:
             return True
         # Longest match wins; Allow wins a tie.
         return best[1]
+
+    async def crawl_delay(self, url: str) -> float | None:
+        """Seconds declared by ``Crawl-delay`` for this origin, if any.
+
+        The directive is not part of the allow/disallow rule set, and honouring
+        it is the difference between a crawler a site tolerates and one it
+        blocks. Returns None when robots.txt is absent, unreachable, or silent.
+        """
+        if not self.settings.fetch_respect_robots:
+            return None
+        try:
+            delay = await self._load_crawl_delay(url)
+        except Exception:
+            return None
+        return delay
+
+    async def _load_crawl_delay(self, url: str) -> float | None:
+        parts = urlsplit(url)
+        robots_url = urlunsplit((parts.scheme, parts.netloc, "/robots.txt", "", ""))
+        # Applies to the whole origin, so it is the one rule set keyed by host
+        # rather than by path.
+        cached = RobotsChecker._delay_cache.get(robots_url)
+        now = time.monotonic()
+        if cached and now - cached[0] < RobotsChecker._delay_ttl_seconds:
+            return cached[1]
+        try:
+            resp = await get_http_client().get(robots_url, timeout=10.0, follow_redirects=True)
+        except Exception:
+            return None
+        if resp.status_code >= 400:
+            return None
+        value: float | None = None
+        # Only the group matching our user-agent counts, plus the wildcard
+        # group, per the same precedence the allow/disallow matcher uses.
+        agent = self._user_agent
+        best_len = -1
+        current: list[str] | None = None
+        for raw in resp.text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line or ":" not in line:
+                continue
+            key, _, value_part = line.partition(":")
+            key = key.strip().lower()
+            value_part = value_part.strip()
+            if key == "user-agent":
+                token = value_part.lower()
+                if token == "*":
+                    current = []
+                    if best_len < 0:
+                        best_len = 0
+                elif agent and (agent == token or agent.startswith(token)):
+                    current = []
+                    if len(token) > best_len:
+                        best_len = len(token)
+                continue
+            if current is None:
+                continue
+            if key == "crawl-delay":
+                try:
+                    parsed = float(value_part)
+                except ValueError:
+                    continue
+                # Last declaration in the winning group wins, per RFC 9309.
+                current.append(parsed)
+        if current:
+            value = current[-1]
+        if len(RobotsChecker._delay_cache) > RobotsChecker.max_cached_origins:
+            oldest = min(RobotsChecker._delay_cache, key=lambda k: RobotsChecker._delay_cache[k][0])
+            RobotsChecker._delay_cache.pop(oldest, None)
+        RobotsChecker._delay_cache[robots_url] = (now, value)
+        return value
 
     # -- fetching ---------------------------------------------------------
 

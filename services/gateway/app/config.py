@@ -194,6 +194,9 @@ class Settings(BaseSettings):
     crawler_continuous_interval_seconds: float = 3600.0
     crawler_recrawl_after_seconds: float = 604800.0
     crawler_recrawl_batch: int = 100
+    # Minimum spacing between fetches to the same origin. robots.txt's
+    # Crawl-delay is honoured when present and must be at least this.
+    crawler_min_delay_seconds: float = 1.0
 
     search_max_offset: int = 1000
     # Web results queued for full-text enrichment per search. Anything past

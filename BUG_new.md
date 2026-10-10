@@ -15,7 +15,7 @@
 | P0       | 3        | 2     | 1    |
 | P1       | 6        | 6     | 0    |
 | P2       | 2        | 1     | 1    |
-| **Total**| **11**   | **9** | **2** |
+| **Total**| **11**   | **9** | **1** (BUG-10 retracted) |
 
 Eleven defects were reported. **Nine are fixed and verified live.** Two remain open:
 BUG-2 (vector search non-functional — the substance, not the visibility) and BUG-10
@@ -38,7 +38,7 @@ and its visibility is now loud even though the underlying fault persists.
 | BUG-7 | **fixed** | response now carries `returned`, `has_more`, `offset` alongside `total` |
 | BUG-8 | **fixed** | contradictory filters → `422 domains and exclude_domains both contain arxiv.org — no document could ever match` |
 | BUG-9 | **fixed** | unresolvable host → `provider_error` / HTTP 502 `cannot resolve host for ...` (no longer framed as an egress violation) |
-| BUG-10 | **partially fixed** | in-process cache now invalidated on ingest (`invalidate("search:*")`); still no admin endpoint and still fragmented per worker |
+| BUG-10 | **retracted** | misdiagnosis: the cache is Redis-backed (DB 1), shared across workers, pattern-invalidated after ingest, and flushable via `POST /v1/admin/cache/flush` |
 | BUG-11 | **fixed** | `stats` now reports `documents_without_chunks`, `chunks_with_embedding`, `embedding_coverage`, `vector_search_available` |
 
 ---
@@ -328,44 +328,32 @@ error code (502-class).
 
 ## P2 — Operational
 
-### BUG-10 · Result cache cannot be centrally invalidated
+### BUG-10 · ~~Result cache cannot be centrally invalidated~~ — RETRACTED, not a defect
 
-**Severity:** P2 · **Status: PARTIALLY FIXED**
-**Component:** `services/gateway/app/cache.py:140-147`
+**Status: RETRACTED. This was a misdiagnosis and there is nothing to fix.**
 
-> **What changed.** The ingest worker now calls `invalidate("search:*")` after a successful
-> crawl, so a re-crawl is no longer invisible for up to `search_cache_ttl_seconds`. That
-> was the specific stale-empty-result failure observed during testing.
->
-> **What remains.** The cache is still a process-local singleton rather than Redis, so there
-> is still no admin endpoint to clear it, and it is still fragmented across uvicorn workers.
-> The docs still describe it as "the Redis result cache".
+The cache was reported as an in-process singleton. That was wrong: the evidence was
+a `redis-cli dbsize` on **DB 0** returning 0, while the cache lives in **DB 1**
+(`cache_redis_url` rewrites the DB index). Reading an empty database as "nothing
+is using Redis" produced a false bug.
 
-The cache is a process-local singleton, not Redis:
+Verified correct:
 
-```python
-_cache: Cache | None = None
-
-def get_cache() -> Cache:
-    global _cache
-    if _cache is None:
-        _cache = Cache()
-    return _cache
+```
+search:* keys after a query:        1
+POST /v1/admin/cache/flush ->      {"removed": 1, "cache_ttl_seconds": 300}
+search:* keys after flush:          0
 ```
 
-Consequences:
+`app/cache.py` is Redis-backed, shared across uvicorn workers, supports
+pattern invalidation (called as `invalidate("search:*")` after each successful
+ingest), and exposes an admin flush endpoint. Two documentation files had also
+claimed the cache was in-process; both were corrected.
 
-- No admin endpoint to clear it. Recovering from a bad index requires a gateway restart.
-- Fragmented across uvicorn workers (`GATEWAY_WORKERS` defaults to 2), so two workers can
-  serve different results for the same query.
-- Observed during this pass: stale empty results were served for minutes after the
-  underlying fault was fixed, with `cache_hit: true, took_ms: 0` — the zero latency is a
-  strong tell, but only if you know to look for it.
-
-`docs` already describe the gateway result cache as "the Redis result cache"; the
-implementation is in-process. Either reconcile the docs or move the cache to Redis.
-
----
+The real fragility found nearby — and still worth watching — is that the cache
+DB index is derived by string-rewriting `REDIS_URL` (`path.rsplit("/", 1)[0] +
+f"/{redis_cache_db}"`). Anything that inspects the wrong DB index will conclude,
+as it did here, that the cache is not working.
 
 ### BUG-11 · `stats.chunks` is misleading and masked BUG-2
 
@@ -476,9 +464,6 @@ Nine of eleven are done. Remaining:
    `INSTALL_EMBEDDINGS=1` is requested but the resulting image reports
    `provider.available == False` at startup, so a stale image fails loudly instead of
    silently degrading to keyword search.
-2. **BUG-10** — finish the job: either move the search cache to Redis (restores central
-   invalidation and cross-worker consistency) or correct `docs/mcp.md`, which currently
-   describes an in-process cache as a Redis-backed one.
 3. **BUG-1 regression test** — the fix is verified manually but the suite does not cover the
    renderer branch. Add a case that 404s a suffix-less URL so the renderer path is actually
    taken.

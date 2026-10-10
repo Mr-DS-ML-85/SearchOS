@@ -8,7 +8,13 @@ from app.config import get_settings
 from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchResult
-from app.search.base import ProviderQuery, ProviderResult, SearchProvider, domain_of
+from app.search.base import (
+    ProviderQuery,
+    ProviderResult,
+    SearchProvider,
+    domain_allowed,
+    domain_of,
+)
 
 logger = get_logger("search.providers.exa_mcp")
 
@@ -122,6 +128,9 @@ class ExaMCPProvider(SearchProvider):
         for rank, item in enumerate(parsed[: query.num_results], start=1):
             url = item.get("url") or ""
             if not url:
+                continue
+            # includeDomains is advisory upstream; re-apply it here.
+            if not domain_allowed(url, query.domains, query.exclude_domains):
                 continue
             snippet = (item.get("text") or item.get("snippet") or item.get("description") or "").strip()
             result.results.append(

@@ -27,6 +27,10 @@ test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "respx>=0.21",
+    # tests/test_mcp.py and tests/test_mcp_e2e.py import services/mcp/searchos_mcp.py,
+    # which needs mcp_types. It arrives via the mcp SDK, but the gateway's own
+    # test extra never declared it, so 37 tests errored on collection.
+    "mcp>=2.0",
 ]
 # Opt-in: pulls torch + CUDA wheels (~3 GB). Without it the gateway runs
 # FTS-only and the `vector` provider reports itself unavailable, which is the

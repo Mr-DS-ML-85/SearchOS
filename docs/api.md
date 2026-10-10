@@ -15,7 +15,7 @@ All endpoints accept `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 | `domains` | repeated or comma list | — | restrict to these domains |
 | `exclude_domains` | repeated or comma list | — | exclude these domains |
 | `offset` | int 0–1000 | 0 | pagination offset |
-| `cache` | bool | `true` | enable the result cache (see note) |
+| `cache` | bool | `true` | enable the Redis result cache |
 
 Both list parameters accept `?domains=a.com&domains=b.com` and
 `?domains=a.com,b.com` interchangeably. They are matched as substrings of the

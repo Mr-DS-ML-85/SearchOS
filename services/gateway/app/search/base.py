@@ -49,3 +49,30 @@ def domain_of(url: str) -> str:
 
     m = re.match(r"https?://([^/]+)", url or "")
     return m.group(1) if m else ""
+
+
+def bare_host(value: str) -> str:
+    """Lowercase a hostname and drop a leading ``www.`` so filters match subdomains."""
+    h = (value or "").strip().lower().rstrip(".")
+    return h[4:] if h.startswith("www.") else h
+
+
+def domain_allowed(url: str, domains: list[str] | None, exclude_domains: list[str] | None) -> bool:
+    """Whether ``url`` satisfies the caller's domain constraints.
+
+    Not every upstream honours them. s.jina.ai has no domain parameter at all,
+    and Exa's MCP server returned undsci.berkeley.edu alongside
+    en.wikipedia.org despite being given ``includeDomains`` — so ``domains``
+    has to be re-applied client-side or ``domains=wikipedia.org`` quietly
+    returns unrelated sites.
+    """
+    included = [bare_host(d) for d in (domains or []) if d]
+    excluded = [bare_host(d) for d in (exclude_domains or []) if d]
+    if not included and not excluded:
+        return True
+    host = bare_host(url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0])
+    if excluded and any(host == d or host.endswith("." + d) for d in excluded):
+        return False
+    if included and not any(host == d or host.endswith("." + d) for d in included):
+        return False
+    return True

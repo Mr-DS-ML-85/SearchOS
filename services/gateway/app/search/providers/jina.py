@@ -6,7 +6,13 @@ from app.config import get_settings
 from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchResult
-from app.search.base import ProviderQuery, ProviderResult, SearchProvider, domain_of
+from app.search.base import (
+    ProviderQuery,
+    ProviderResult,
+    SearchProvider,
+    domain_allowed,
+    domain_of,
+)
 
 logger = get_logger("search.providers.jina")
 
@@ -52,6 +58,8 @@ class JinaProvider(SearchProvider):
             url = item.get("url") or ""
             if not url:
                 continue
+            if not domain_allowed(url, query.domains, query.exclude_domains):
+                continue
             snippet = (item.get("description") or item.get("content") or "").strip()
             result.results.append(
                 SearchResult(
@@ -68,3 +76,16 @@ class JinaProvider(SearchProvider):
             )
         result.latency_ms = (time.monotonic() - start) * 1000
         return result
+
+        def bare(value: str) -> str:
+            v = (value or "").strip().lower().rstrip(".")
+            return v[4:] if v.startswith("www.") else v
+
+        host = bare(url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0])
+        excluded = [bare(d) for d in (query.exclude_domains or []) if d]
+        if excluded and any(host == d or host.endswith("." + d) for d in excluded):
+            return False
+        included = [bare(d) for d in (query.domains or []) if d]
+        if included and not any(host == d or host.endswith("." + d) for d in included):
+            return False
+        return True

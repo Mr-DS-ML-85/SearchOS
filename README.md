@@ -196,11 +196,19 @@ claude mcp list    # shows "✔ Connected"
 7. Web results are persisted to the index, and the top `SEARCH_ENRICH_TOP_N` URLs (default 15) are enqueued for snippet enrichment / full-page crawl.
 8. Response includes `providers`, `degraded`, `top_score`, `low_confidence`, and timing.
 
-> **Note on caching.** The search/extract result cache is an **in-process**
-> singleton, not Redis. It is invalidated after every successful ingest, but it
-> cannot be flushed centrally and is per uvicorn worker, so two workers may serve
-> different results for the same query. Redis backs rate-limit counters and the
-> snippet queue.
+> **Note on caching.** The search/extract result cache is **Redis**-backed (DB 1;
+> rate-limit counters use DB 2, and the snippet queue shares DB 1), so it is
+> shared across uvicorn workers rather than per-process. It is invalidated by
+> pattern after every successful ingest, and can be flushed on demand:
+>
+> ```bash
+> curl -X POST localhost:8000/v1/admin/cache/flush -H "Authorization: Bearer $ADMIN_KEY"
+> # {"removed": 12, "cache_ttl_seconds": 300}
+> ```
+>
+> Empty and low-confidence responses use the shorter
+> `SEARCH_NEGATIVE_CACHE_TTL_SECONDS`, so a transient miss does not pin itself
+> for the full TTL.
 
 ### Reranking and relevance thresholds
 
@@ -256,7 +264,7 @@ Full reference in [docs/api.md](docs/api.md).
 | `time_range` | `day`\|`week`\|`month`\|`year`\|`all` | `all` | freshness filter |
 | `domains` / `exclude_domains` | list[string] | — | domain restrictions |
 | `offset` | int | 0 | pagination offset |
-| `cache` | bool | `true` | enable the result cache (see note) |
+| `cache` | bool | `true` | enable the Redis result cache |
 
 ```json
 {

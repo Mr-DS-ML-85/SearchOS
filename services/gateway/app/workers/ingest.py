@@ -21,6 +21,7 @@ from app.extract.robots import RobotsChecker
 from app.logging import get_logger
 from app.metrics import get_metrics
 from app.models import Chunk, Document, IngestJob, IngestJobStatus, IngestKind
+from app.search.politeness import wait_for_origin
 
 logger = get_logger("workers.ingest")
 
@@ -106,6 +107,7 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
         return
 
     try:
+        await wait_for_origin(job.url)
         page = await fetch_page(job.url)
         extracted = extract_page(page)
         content = extracted.content
@@ -333,6 +335,7 @@ async def _process_sitemap(session_factory: async_sessionmaker, job: IngestJob) 
         # Sitemaps used to be fetched with the raw shared client, bypassing
         # robots, the content-type check, the size limit and the SSRF guard.
         validate_url(job.url)
+        await wait_for_origin(job.url)
         resp = await get_http_client().get(job.url, timeout=30.0, follow_redirects=True)
         resp.raise_for_status()
         if len(resp.content) > get_settings().extract_max_bytes * 4:
