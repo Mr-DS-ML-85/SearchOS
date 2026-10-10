@@ -228,3 +228,46 @@ def regconfig_for(language: str | None) -> str:
 def normalize(text: str) -> str:
     """NFKC-fold so visually identical forms share a tsvector."""
     return unicodedata.normalize("NFKC", text or "")
+
+
+# Callers speak ISO 639-1 ("fr", "fr-CA"); documents store the detector's names
+# ("french"). Comparing the two directly matched nothing, which is why a
+# `language=fr` search silently returned English results.
+_ISO_TO_NAME = {
+    "en": "english",
+    "de": "german",
+    "fr": "french",
+    "es": "spanish",
+    "pt": "portuguese",
+    "it": "italian",
+    "nl": "dutch",
+    "tr": "turkish",
+    "pl": "polish",
+    "ru": "russian",
+    "uk": "ukrainian",
+    "ja": "japanese",
+    "ko": "korean",
+    "zh": "chinese",
+    "ar": "arabic",
+    "he": "hebrew",
+    "hi": "devanagari",
+    "bn": "bengali",
+    "ta": "tamil",
+    "th": "thai",
+    "el": "greek",
+}
+_KNOWN_NAMES = set(_ISO_TO_NAME.values()) | set(_STOPWORDS) | {name for name, _ in _SCRIPT_RANGES}
+
+
+def language_name(code: str | None) -> str | None:
+    """Map an ISO code, locale or language name onto the stored ``lang`` value.
+
+    Returns None for anything unrecognised so the caller can reject it rather
+    than filter on a value no document will ever carry.
+    """
+    if not code:
+        return None
+    raw = code.strip().lower().replace("_", "-")
+    if raw in _KNOWN_NAMES:
+        return raw
+    return _ISO_TO_NAME.get(raw.split("-")[0])

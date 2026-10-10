@@ -119,6 +119,37 @@ class LocalIndexProvider(SearchProvider):
             {"max_age_secs": TIME_RANGE_SECONDS[query.time_range]},
         )
 
+    @staticmethod
+    def _language_filter(query: ProviderQuery) -> tuple[str, dict]:
+        """Restrict to documents detected as the requested language.
+
+        `language` used to reach only the web tiers, so on any query the local
+        index could answer, `language=fr` returned English. Documents whose
+        language could not be detected are excluded: including them would let
+        exactly those English pages through again.
+        """
+        if not query.language:
+            return "", {}
+        from app.search.langdetect import language_name
+
+        name = language_name(query.language)
+        if name is None:
+            # Unknown code: match nothing rather than silently ignore the filter.
+            return " AND false", {}
+        return " AND d.lang = :req_lang", {"req_lang": name}
+
+    def filter_sql(self, query: ProviderQuery) -> tuple[str, dict]:
+        """Every document-level filter, as SQL against alias ``d``."""
+        sql, params = "", {}
+        for part_sql, part_params in (
+            self._domain_filters(query),
+            self._time_filter(query),
+            self._language_filter(query),
+        ):
+            sql += part_sql
+            params.update(part_params)
+        return sql, params
+
     async def search(self, query: ProviderQuery) -> ProviderResult:
         start = time.monotonic()
         result = ProviderResult(provider=self.name, query=query.q)
@@ -152,15 +183,13 @@ class LocalIndexProvider(SearchProvider):
         return result
 
     async def _fts_search(self, query: ProviderQuery, *, or_fallback: bool = True) -> list:
-        domain_sql, domain_params = self._domain_filters(query)
-        time_sql, time_params = self._time_filter(query)
+        filter_sql, filter_params = self.filter_sql(query)
         order = """
             ORDER BY fts_score DESC, d.fetched_at DESC NULLS LAST
             LIMIT :limit OFFSET :offset
         """
         params: dict = {"limit": query.num_results, "offset": query.offset}
-        params.update(domain_params)
-        params.update(time_params)
+        params.update(filter_params)
 
         rows: list = []
         async with self.session_factory() as session:
@@ -199,7 +228,7 @@ class LocalIndexProvider(SearchProvider):
                         FROM documents d
                         WHERE d.status = 'indexed' AND ({clauses})
                         """
-                    sql = text(base + domain_sql + time_sql + order)  # noqa: S608 - values bound
+                    sql = text(base + filter_sql + order)  # noqa: S608 - values bound
                     found = (await session.execute(sql, {**params, **params_lang})).mappings().all()
                     if found:
                         return found
@@ -215,7 +244,7 @@ class LocalIndexProvider(SearchProvider):
                         WHERE d.status = 'indexed' AND d.tsv IS NULL
                           AND {expr} @@ to_tsquery('{config}', :tsq)
                         """
-                    sql = text(base + domain_sql + time_sql + order)  # noqa: S608 - values bound
+                    sql = text(base + filter_sql + order)  # noqa: S608 - values bound
                     rows = (await session.execute(sql, {**params, "tsq": tsq})).mappings().all()
                     if rows:
                         return rows

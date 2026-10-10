@@ -17,25 +17,39 @@ from app.search.snippets import build_snippet
 # of the LIMIT slots and RRF added 1/(k+rank) once per chunk — making document
 # length a relevance multiplier that could outrank genuinely multi-provider
 # matches. DISTINCT ON (d.id) keeps the nearest chunk per document.
-SQL = text(
+def build_sql(filter_sql: str = ""):
+    """Nearest documents by their best-matching chunk.
+
+    ``DISTINCT ON`` needs ``ORDER BY d.id`` first, so ranking and LIMIT must
+    happen in an outer query. Applying LIMIT inline kept the first N documents
+    *by UUID* among everything above the similarity floor — an arbitrary set in
+    arbitrary order. ``filter_sql`` carries the same domain, time and language
+    filters as the local index; the vector provider used to apply none of them,
+    so `domains=[docs.rs]` still returned other sites through this path.
     """
-    SELECT DISTINCT ON (d.id)
-        d.url,
-        d.title,
-        d.content_text,
-        d.published_at,
-        d.source,
-        c.content AS chunk_content,
-        1 - (c.embedding <=> CAST(:vec AS vector)) AS similarity
-    FROM chunks c
-    JOIN documents d ON d.id = c.document_id
-    WHERE c.embedding IS NOT NULL
-      AND d.status = 'indexed'
-      AND 1 - (c.embedding <=> CAST(:vec AS vector)) >= :min_similarity
-    ORDER BY d.id, c.embedding <=> CAST(:vec AS vector)
-    LIMIT :limit
-    """
-)
+    return text(
+        f"""
+        SELECT * FROM (
+            SELECT DISTINCT ON (d.id)
+                d.url,
+                d.title,
+                d.content_text,
+                d.published_at,
+                d.source,
+                c.content AS chunk_content,
+                1 - (c.embedding <=> CAST(:vec AS vector)) AS similarity
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            WHERE c.embedding IS NOT NULL
+              AND d.status = 'indexed'
+              AND 1 - (c.embedding <=> CAST(:vec AS vector)) >= :min_similarity
+              {filter_sql}
+            ORDER BY d.id, c.embedding <=> CAST(:vec AS vector)
+        ) best
+        ORDER BY similarity DESC
+        LIMIT :limit
+        """  # noqa: S608 - filter values are bound parameters
+    )
 
 # Candidate retrieval scans more chunks than the number of documents we want, so
 # a single long document cannot crowd out the rest of the result set.
@@ -65,14 +79,18 @@ class VectorIndexProvider(SearchProvider):
             result.latency_ms = (time.monotonic() - start) * 1000
             return result
 
+        from app.search.local_index import LocalIndexProvider
+
+        filter_sql, filter_params = LocalIndexProvider(self.session_factory).filter_sql(query)
         params = {
             "vec": str(vector),
             "limit": query.num_results,
             "min_similarity": self.settings.vector_min_similarity,
+            **filter_params,
         }
         try:
             async with self.session_factory() as session:
-                rows = (await session.execute(SQL, params)).mappings().all()
+                rows = (await session.execute(build_sql(filter_sql), params)).mappings().all()
         except Exception as e:
             get_metrics().provider_errors.labels(provider=self.name, kind="query").inc()
             result.error = f"vector query failed: {e.__class__.__name__}: {e}"

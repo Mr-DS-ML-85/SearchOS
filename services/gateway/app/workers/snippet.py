@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.cache import get_cache
@@ -10,7 +10,6 @@ from app.config import get_settings
 from app.extract.extractor import extract_page
 from app.extract.fetcher import fetch_page
 from app.logging import get_logger
-from app.metrics import get_metrics
 from app.models import Document
 
 logger = get_logger("workers.snippet")
@@ -28,7 +27,7 @@ async def enqueue_snippets(urls: list[str]) -> None:
 
 async def enrich_snippets(session_factory: async_sessionmaker, urls: list[str]) -> None:
     from app.search.providers.searxng import SNIPPET_META_FLAG
-    from app.workers.ingest import normalize_url
+    from app.workers.ingest import index_document, normalize_url
 
     for url in urls:
         try:
@@ -43,17 +42,18 @@ async def enrich_snippets(session_factory: async_sessionmaker, urls: list[str]) 
             extracted = extract_page(page)
             if not extracted.content.strip():
                 continue
-            async with session_factory() as session:
-                doc = await session.scalar(select(Document).where(Document.normalized_url == norm))
-                if doc is None:
-                    doc = Document(url=url, normalized_url=norm, status="indexed")
-                    session.add(doc)
-                doc.title = extracted.title
-                doc.content_text = extracted.content[:100000]
-                doc.fetched_at = func.now()
-                doc.status = "indexed"
-                await session.commit()
-            get_metrics().documents_indexed.inc()
+            # The full indexing path, not a bare content swap: this used to set
+            # content_text and nothing else, leaving tsv, lang, simhash, chunks
+            # and vectors describing the snippet, and the snippet flag set — so
+            # the next search that returned this URL reverted it.
+            await index_document(
+                session_factory,
+                url=url,
+                final_url=url,
+                extracted=extracted,
+                source="crawler",
+                max_chars=100000,
+            )
         except Exception as e:
             logger.debug("snippet enrichment failed for %s: %s", url, e)
 

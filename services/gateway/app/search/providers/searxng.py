@@ -15,6 +15,7 @@ from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchResult
 from app.search.base import ProviderQuery, ProviderResult, SearchProvider
+from app.search.langdetect import language_name
 from app.workers.ingest import normalize_url
 
 SNIPPET_META_FLAG = "searxng_snippet"
@@ -51,8 +52,14 @@ class SearXNGProvider(SearchProvider):
             "safesearch": 0,
             "categories": "general",
         }
+        # SearXNG takes a locale ("fr-CA"), which is the only place `country`
+        # can mean anything: indexed documents carry no country signal. It was
+        # previously accepted by the API and read by no provider at all.
         if query.language:
-            params["language"] = query.language
+            lang = query.language.strip()
+            if query.country and "-" not in lang:
+                lang = f"{lang}-{query.country.strip().upper()}"
+            params["language"] = lang
         if query.time_range and query.time_range != "all":
             params["time_range"] = query.time_range
         try:
@@ -118,7 +125,10 @@ class SearXNGProvider(SearchProvider):
                     "norm": normalize_url(url),
                     "title": item.get("title") or url,
                     "content": (item.get("content") or "")[:300],
-                    "lang": item.get("language") or None,
+                    # Stored as the detector's names ("french"), which is what
+                    # the language filter compares against; SearXNG reports
+                    # ISO codes ("fr", "fr-FR").
+                    "lang": language_name(item.get("language")),
                     "published": self._parse_dt(item.get("publishedDate") or item.get("published_date")),
                     "meta": json.dumps({"searxng_snippet": True, "engine": item.get("engine")}),
                 }

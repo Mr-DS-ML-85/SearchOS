@@ -375,6 +375,9 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
             return text_result(f"offset must be between 0 and 1000, got {offset}", is_error=True)
     else:
         offset = 0
+    cursor = args.get("cursor") or None
+    if cursor and offset:
+        return text_result("pass either cursor or offset, not both (a cursor already encodes its offset)", is_error=True)
     # The gateway accepts domains as repeated query params (or a comma list);
     # a bare comma-joined string used to be parsed as one element and matched
     # nothing, silently.
@@ -392,10 +395,10 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
                 "language": args.get("language"),
                 "country": args.get("country"),
                 "time_range": args.get("time_range", "all"),
+                # A cursor carries its own offset; sending both made the gateway
+                # silently ignore the offset, so report the conflict instead.
                 "offset": offset,
-                # cursor and offset are mutually exclusive upstream; sending
-                # both makes the gateway prefer the cursor.
-                "cursor": args.get("cursor"),
+                "cursor": cursor,
                 "cache": args.get("cache", True),
                 # Only sent when the caller sets it, so the server default stands
                 # otherwise. Accepts true/false as well as on/1 strings.
@@ -426,8 +429,18 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
                 "total": body.get("total"),
                 "returned": body.get("returned", len(results)),
                 "has_more": body.get("has_more"),
+                # The tool schema tells agents to page with `cursor`, and the
+                # gateway returns one, but this whitelist dropped it: has_more
+                # said "there is a next page" with no way to ask for it.
+                "next_cursor": body.get("next_cursor"),
                 "offset": offset,
                 "took_ms": body.get("took_ms"),
+                # Without these an agent cannot tell a weak match from an answer,
+                # or an upstream that returned nothing from one that never ran.
+                "top_score": body.get("top_score"),
+                "low_confidence": body.get("low_confidence"),
+                "empty_providers": body.get("empty_providers", []),
+                "operators_applied": body.get("operators_applied"),
                 "cache_hit": body.get("cache_hit"),
                 # The gateway distinguishes an exact cache hit from a semantic
                 # one (a rephrasing resolved by embedding). Whitelisting only

@@ -10,7 +10,10 @@ Written for Claude Code. Read this before changing anything.
 
 ## 1. What you are picking up
 
-I fixed three real bugs and **failed to close one**. The open item is a Tavily
+Search, image search (both directions), ColBERT, federation, MCP and the eval
+harness are all in place — §2 lists what was re-verified at handover.
+
+I fixed several real bugs and **failed to close one**. The open item is a Tavily
 behaviour I could not reproduce on demand. Everything else in this document is
 verified and committed.
 
@@ -65,7 +68,59 @@ confirm the diagnosis, even though we do not have a key.
 
 ---
 
-## 2. Fixed in the last session (all committed)
+## 2. Verified working right now (re-checked at handover)
+
+### Image search — both directions, via REST *and* MCP
+
+Implemented in `babff2a`. CLIP puts images and text in one vector space, so both
+directions are the same operation against the same index.
+
+`GET /v1/images/search?q=<text>` — **text → image**
+`GET /v1/images/search?image_url=<url>` — **image → image**
+MCP tool: **`search_images`** (args `query` and/or `image_url`; the gateway's own
+parameter is `q`, the MCP tool renames it for consistency with `search`).
+
+Re-verified at handover:
+
+```
+text -> image
+  "a white arctic fox in snow"                  -> 0.375 Vulpes_lagopus_in_Iceland
+                                                    0.346 Arctic_fox
+  "a portrait painting of a woman with a subtle smile"
+                                                 -> 0.310 Mona_Lisa
+                                                    0.306 Isleworthml
+  "sailing yacht on the ocean"  (via MCP)        -> 0.308 Ahmanson_Cup_Regatta_yacht
+
+image -> image  (query = a Vulpes lagopus photo)
+  the query image itself                          1.000
+  Arctic_fox_6375652473                           0.871
+  Alopex_lagopus_cub_summer_coat                  0.824
+```
+
+Index state: **34 images, 34 embedded**. A self-match at exactly 1.000 is the
+sanity check that the two directions share one space.
+
+Note for the record: an external agent previously reported image search as
+"not verifiable — there's no image parameter in the search tool". That was true
+before `4bf0c1d`, which added the `search_images` tool. It is a separate endpoint
+by design, not a parameter of `search`.
+
+First image query after a fresh start is slow (seconds) — CLIP is lazy-loaded on
+first use, and weights are cached on the `modelcache` volume so this is paid once
+per rebuild, not per query. `image_search_available: false` in the response means
+the `images` extra (Pillow) is missing; that is a degraded mode, not an empty
+index.
+
+### ColBERT toggle (for A/B from an agent)
+
+`GET /v1/search?...&colbert=true|false` and the same flag on the MCP `search`
+tool. Overrides the server default per query. Verified end-to-end: **266 ms off
+vs 3298 ms on**, ordering changes. **It is off by default and measured as a
+quality regression — see §5.**
+
+---
+
+## 3. Fixed in the last session (all committed)
 
 ### `153587c` — IndexError 500s
 `SemanticCache.lookup` grew a 4th return element (`miss reason`) but two of six
@@ -121,7 +176,7 @@ See `git log`. **Note: `770a380`'s ColBERT measured as a regression**
 
 ---
 
-## 3. Environment notes that will bite you
+## 4. Environment notes that will bite you
 
 - **Containers hold baked-in code.** Host edits are *not* mounted. Always
   `docker compose build gateway worker && docker compose up -d`. The MCP service
@@ -143,7 +198,7 @@ See `git log`. **Note: `770a380`'s ColBERT measured as a regression**
 
 ---
 
-## 4. Test commands
+## 5. Test commands
 
 ```bash
 cd services/gateway && uv run --extra test python -m pytest ../../tests -q
@@ -166,7 +221,7 @@ python tools/eval_retrieval.py --api-key sk_... --sources local
 
 ---
 
-## 5. Things I would not trust without re-checking
+## 6. Things I would not trust without re-checking
 
 - **ColBERT's blend weight (30)** was calibrated from score distributions, not
   from the benchmark. The benchmark then showed it *regresses* quality. Off by
@@ -182,7 +237,7 @@ python tools/eval_retrieval.py --api-key sk_... --sources local
 
 ---
 
-## 6. Conventions
+## 7. Conventions
 
 - Commit author: `Mr-DS-ML-85 <gojmanday@gmail.com>`. No AI co-author trailers.
 - Commits already pushed are never amended — add a follow-up commit.

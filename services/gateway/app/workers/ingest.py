@@ -104,7 +104,6 @@ def _parse_published(value: object) -> datetime | None:
 
 
 async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob) -> None:
-    settings = get_settings()
     if job.kind == IngestKind.sitemap:
         await _process_sitemap(session_factory, job)
         return
@@ -117,116 +116,13 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
         if not content.strip():
             raise ValueError("empty extracted content")
 
-        doc_id = uuid.uuid4()
-        doc = Document(
-            id=doc_id,
+        await index_document(
+            session_factory,
             url=job.url,
-            normalized_url=normalize_url(page.final_url),
-            title=extracted.title,
-            content_text=content,
-            content_html=None,
-            content_hash=hashlib.sha256(content.encode()).hexdigest(),
-            lang=extracted.language,
+            final_url=page.final_url,
+            extracted=extracted,
             source="ingest",
-            author=extracted.author,
-            # Previously hardcoded to None, so extracted publish dates were
-            # parsed and discarded and the reranker's freshness boost never
-            # fired for crawled documents.
-            published_at=_parse_published(extracted.published),
-            fetched_at=datetime.now(UTC),
-            status="indexed",
-        )
-
-        # trafilatura reports a language for PDFs but returns None for most
-        # HTML, so every document was landing with lang=NULL and being stemmed
-        # with `english` regardless of what it was written in.
-        language = extracted.language or detect_language(f"{extracted.title or ''} {content[:4000]}")
-        doc.lang = language
-        doc.tsv = await build_language_tsv(language, f"{extracted.title or ''} {content}")
-        doc.simhash = simhash(content)
-
-        chunks = chunk_text(
-            content,
-            max_tokens=settings.chunk_max_tokens,
-            overlap_tokens=settings.chunk_overlap_tokens,
-        )
-        vectors: list[list[float]] | None = None
-        embedding = get_embedding_provider()
-        embedding_skipped_reason: str | None = None
-        if embedding.available:
-            try:
-                vectors = await embedding.embed(chunks)
-            except Exception as e:
-                # Non-fatal: the document is still FTS-searchable. Count it so a
-                # silent embedding outage is visible, and re-queue a backfill.
-                embedding_skipped_reason = "error"
-                logger.warning("embedding failed for %s: %s", job.url, e)
-                get_metrics().embedding_failures.inc()
-        else:
-            # The embedder is not installed / not loaded. Previously this was a
-            # completely silent branch: documents were written with
-            # status='indexed' and zero vectors, the vector provider reported
-            # itself unavailable, and nothing anywhere said so. A search index
-            # with no vectors still answers queries — just lexically — which is
-            # exactly the kind of degradation nobody notices.
-            embedding_skipped_reason = "unavailable"
-            get_metrics().embedding_skipped.labels(reason="unavailable").inc()
-            logger.warning(
-                "indexing %s without embeddings: the embedding provider is unavailable "
-                "(is sentence-transformers installed? set INSTALL_EMBEDDINGS=1 to build it). "
-                "Retrieval will fall back to keyword-only for this and all other documents.",
-                job.url,
-            )
-
-        async with session_factory() as session:
-            existing = await session.scalar(
-                select(Document)
-                .where(Document.normalized_url == doc.normalized_url)
-                .options(selectinload(Document.chunks))
-            )
-            if existing:
-                for chunk in existing.chunks:
-                    await session.delete(chunk)
-                existing.title = doc.title
-                existing.content_text = doc.content_text
-                existing.content_hash = doc.content_hash
-                existing.lang = doc.lang
-                existing.tsv = doc.tsv
-                existing.simhash = doc.simhash
-                existing.status = "indexed"
-                existing.fetched_at = doc.fetched_at
-                doc = existing
-            else:
-                session.add(doc)
-
-            for i, chunk_content in enumerate(chunks):
-                session.add(
-                    Chunk(
-                        document_id=doc.id,
-                        index=i,
-                        content=chunk_content,
-                        token_count=estimate_tokens(chunk_content),
-                        embedding=vectors[i] if vectors else None,
-                    )
-                )
-            await session.execute(
-                update(IngestJob)
-                .where(IngestJob.id == job.id)
-                .values(status=IngestJobStatus.done, finished_at=datetime.now(UTC))
-            )
-            await session.commit()
-
-        get_metrics().documents_indexed.inc()
-        get_metrics().chunks_indexed.inc(len(chunks))
-        if embedding_skipped_reason:
-            get_metrics().documents_without_vectors.inc()
-        if vectors is None and embedding_skipped_reason is None:
-            get_metrics().embedding_skipped.labels(reason="no_vectors").inc()
-        logger.info(
-            "indexed %s (%d chunks, %s)",
-            job.url,
-            len(chunks),
-            f"{len(vectors)} vectors" if vectors else "no vectors (keyword-only)",
+            job_id=job.id,
         )
 
         await _index_page_images(session_factory, job, page, content)
@@ -246,6 +142,149 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
     except Exception as e:
         logger.warning("ingest failed for %s: %s", job.url, e)
         await _mark_job_failed(session_factory, job, str(e))
+
+
+async def index_document(
+    session_factory: async_sessionmaker,
+    *,
+    url: str,
+    final_url: str,
+    extracted,
+    source: str,
+    job_id: uuid.UUID | None = None,
+    max_chars: int | None = None,
+) -> int:
+    """Write one extracted page as a fully indexed document. Returns chunk count.
+
+    The only place a document's content and everything derived from it (lang,
+    tsv, simhash, hash, chunks, vectors) is written together. The snippet
+    enricher used to replace content_text on its own and derive nothing, so a
+    page grew from a 160-char snippet to 30k chars while its chunks, and with
+    them vector search, still described the snippet — permanently, because the
+    backfill only chunks documents that have no chunks at all.
+    """
+    from app.search.providers.searxng import SNIPPET_META_FLAG
+
+    settings = get_settings()
+    content = extracted.content if max_chars is None else extracted.content[:max_chars]
+    doc = Document(
+        id=uuid.uuid4(),
+        url=url,
+        normalized_url=normalize_url(final_url),
+        title=extracted.title,
+        content_text=content,
+        content_html=None,
+        content_hash=hashlib.sha256(content.encode()).hexdigest(),
+        source=source,
+        author=extracted.author,
+        # Previously hardcoded to None, so extracted publish dates were
+        # parsed and discarded and the reranker's freshness boost never
+        # fired for crawled documents.
+        published_at=_parse_published(extracted.published),
+        fetched_at=datetime.now(UTC),
+        status="indexed",
+    )
+
+    # trafilatura reports a language for PDFs but returns None for most
+    # HTML, so every document was landing with lang=NULL and being stemmed
+    # with `english` regardless of what it was written in.
+    language = extracted.language or detect_language(f"{extracted.title or ''} {content[:4000]}")
+    doc.lang = language
+    doc.tsv = await build_language_tsv(language, f"{extracted.title or ''} {content}")
+    doc.simhash = simhash(content)
+
+    chunks = chunk_text(
+        content,
+        max_tokens=settings.chunk_max_tokens,
+        overlap_tokens=settings.chunk_overlap_tokens,
+    )
+    vectors: list[list[float]] | None = None
+    embedding = get_embedding_provider()
+    embedding_skipped_reason: str | None = None
+    if embedding.available:
+        try:
+            vectors = await embedding.embed(chunks)
+        except Exception as e:
+            # Non-fatal: the document is still FTS-searchable. Count it so a
+            # silent embedding outage is visible, and re-queue a backfill.
+            embedding_skipped_reason = "error"
+            logger.warning("embedding failed for %s: %s", url, e)
+            get_metrics().embedding_failures.inc()
+    else:
+        # The embedder is not installed / not loaded. Previously this was a
+        # completely silent branch: documents were written with
+        # status='indexed' and zero vectors, the vector provider reported
+        # itself unavailable, and nothing anywhere said so. A search index
+        # with no vectors still answers queries — just lexically — which is
+        # exactly the kind of degradation nobody notices.
+        embedding_skipped_reason = "unavailable"
+        get_metrics().embedding_skipped.labels(reason="unavailable").inc()
+        logger.warning(
+            "indexing %s without embeddings: the embedding provider is unavailable "
+            "(is sentence-transformers installed? set INSTALL_EMBEDDINGS=1 to build it). "
+            "Retrieval will fall back to keyword-only for this and all other documents.",
+            url,
+        )
+
+    async with session_factory() as session:
+        existing = await session.scalar(
+            select(Document).where(Document.normalized_url == doc.normalized_url).options(selectinload(Document.chunks))
+        )
+        if existing:
+            for chunk in existing.chunks:
+                await session.delete(chunk)
+            existing.title = doc.title
+            existing.content_text = doc.content_text
+            existing.content_hash = doc.content_hash
+            existing.lang = doc.lang
+            existing.tsv = doc.tsv
+            existing.simhash = doc.simhash
+            existing.status = "indexed"
+            existing.fetched_at = doc.fetched_at
+            existing.published_at = doc.published_at or existing.published_at
+            existing.author = doc.author or existing.author
+            # The SearXNG saver overwrites any row still flagged as a snippet
+            # (ON CONFLICT ... WHERE searxng_snippet), so a fetched page that
+            # kept the flag was reverted to a 300-char snippet by the next
+            # search that returned it.
+            meta = dict(existing.meta or {})
+            if meta.pop(SNIPPET_META_FLAG, None) is not None:
+                existing.meta = meta
+            doc = existing
+        else:
+            session.add(doc)
+
+        for i, chunk_content in enumerate(chunks):
+            session.add(
+                Chunk(
+                    document_id=doc.id,
+                    index=i,
+                    content=chunk_content,
+                    token_count=estimate_tokens(chunk_content),
+                    embedding=vectors[i] if vectors else None,
+                )
+            )
+        if job_id is not None:
+            await session.execute(
+                update(IngestJob)
+                .where(IngestJob.id == job_id)
+                .values(status=IngestJobStatus.done, finished_at=datetime.now(UTC))
+            )
+        await session.commit()
+
+    get_metrics().documents_indexed.inc()
+    get_metrics().chunks_indexed.inc(len(chunks))
+    if embedding_skipped_reason:
+        get_metrics().documents_without_vectors.inc()
+    if vectors is None and embedding_skipped_reason is None:
+        get_metrics().embedding_skipped.labels(reason="no_vectors").inc()
+    logger.info(
+        "indexed %s (%d chunks, %s)",
+        url,
+        len(chunks),
+        f"{len(vectors)} vectors" if vectors else "no vectors (keyword-only)",
+    )
+    return len(chunks)
 
 
 def _is_permanent_error(error: str) -> bool:

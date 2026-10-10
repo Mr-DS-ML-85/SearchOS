@@ -99,8 +99,15 @@ class SemanticCache:
         query: str,
         sources: str = "all",
         embedding: list[float] | None = None,
-    ) -> tuple[dict | None, str | None, float]:
-        """Return ``(cached_response, matched_query, similarity)`` or Nones.
+        *,
+        min_results: int = 0,
+    ) -> tuple[dict | None, str | None, float, str]:
+        """Return ``(cached_response, matched_query, similarity, reason)``.
+
+        ``min_results`` is the window the caller needs (offset + num_results).
+        A snapshot recorded for a smaller page cannot answer it: replaying a
+        3-result snapshot to a caller who asked for 10 returned 3 results with
+        ``has_more: false``, reading as "that is everything".
 
         ``sources`` is part of the identity of an answer, not an afterthought.
         An entry recorded for ``sources=all`` must never satisfy a request for
@@ -144,6 +151,8 @@ class SemanticCache:
                 continue
             if int(entry.get("off", 0) or 0) != 0:
                 # Only first-page snapshots are reusable as another caller's page.
+                continue
+            if min_results and int(entry.get("n", 0) or 0) < min_results:
                 continue
             score = cosine(embedding, entry.get("e") or [])
             # Track the best overall as well as the usable ones. Reporting only

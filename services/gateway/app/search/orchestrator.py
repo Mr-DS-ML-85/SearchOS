@@ -36,16 +36,27 @@ def encode_cursor(offset: int, fingerprint: str) -> str:
     return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
 
-def decode_cursor(cursor: str) -> int | None:
+def decode_cursor(cursor: str, fingerprint: str | None = None) -> int | None:
+    """Offset encoded in ``cursor``, or None when it is malformed or foreign.
+
+    The fingerprint used to be written and never read, so a cursor from one
+    query was silently accepted by another and skipped to an arbitrary row —
+    the exact failure encode_cursor's docstring promises cannot happen.
+    """
     import base64
     import json
 
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         data = json.loads(base64.urlsafe_b64decode(padded))
-        return int(data["o"])
+        offset = int(data["o"])
     except Exception:
         return None
+    if offset < 0:
+        return None
+    if fingerprint is not None and data.get("f") != fingerprint:
+        return None
+    return offset
 
 
 def _dedupe_near_duplicates(results: list, threshold: int) -> tuple[list, int]:
@@ -155,27 +166,50 @@ class SearchOrchestrator:
         # for the other setting is simply wrong.
         colbert_on = req.colbert if req.colbert is not None else self.settings.colbert_enabled
 
+        # Everything except the query text that changes which documents answer
+        # it. Shared by the cursor binding and the semantic cache scope: a
+        # paraphrase may reuse an answer, a differently *filtered* query may not.
+        # The semantic cache used to be scoped by `sources` alone, so a query
+        # with domains=[docs.rs] could be served an unfiltered neighbour's page.
+        filter_identity = [
+            req.sources,
+            sorted(domains),
+            sorted(exclude_domains),
+            colbert_on,
+            (req.language or "").lower(),
+            (req.country or "").lower(),
+            req.time_range,
+            list(parsed.phrases),
+            list(parsed.filetypes),
+        ]
         cursor_fingerprint = hashlib.sha256(
-            json.dumps(
-                [query_text, req.sources, sorted(domains), sorted(exclude_domains), colbert_on],
-                default=str,
-            ).encode()
+            json.dumps([query_text, *filter_identity], default=str).encode()
         ).hexdigest()[:16]
+        semantic_scope = (
+            req.sources + "|" + hashlib.sha256(json.dumps(filter_identity, default=str).encode()).hexdigest()[:16]
+        )
 
         offset = min(req.offset, self.settings.search_max_offset)
         if req.cursor:
-            decoded = decode_cursor(req.cursor)
+            decoded = decode_cursor(req.cursor, cursor_fingerprint)
             if decoded is None:
                 from app.errors import ValidationError
 
-                raise ValidationError("cursor is not valid; pass next_cursor from a previous response")
+                raise ValidationError(
+                    "cursor is not valid for this query; pass next_cursor from a previous "
+                    "response with the same query and filters"
+                )
             offset = min(decoded, self.settings.search_max_offset)
         window = offset + req.num_results
         cache_key_str = cache_key(
             "search",
             query_text.lower().strip(),
             req.sources,
-            window,
+            # The stored value is one page, so the key must name the page. Keyed
+            # on `window` alone, offset=5&n=5 and offset=0&n=10 collided and the
+            # second caller received ranks 1-10 instead of 6-10.
+            offset,
+            req.num_results,
             req.language,
             req.country,
             req.time_range,
@@ -222,8 +256,13 @@ class SearchOrchestrator:
                     cached.pop(field, None)
                 return SearchResponse(**cached)
 
-            semantic = await self.semantic_cache.lookup(query_text, req.sources)
+            semantic = await self.semantic_cache.lookup(query_text, semantic_scope, min_results=window)
             if semantic[0] is not None:
+                # Same as the exact path: a served answer is still a query run.
+                try:
+                    await cache.record_query(req.q, results=len(semantic[0].get("results") or []))
+                except Exception:
+                    pass
                 semantic[0]["query"] = req.q
                 semantic[0]["took_ms"] = int((time.monotonic() - start) * 1000)
                 # cache_hit stays False for a semantic match, which made a served
@@ -440,7 +479,7 @@ class SearchOrchestrator:
             if results and not weak:
                 try:
                     await self.semantic_cache.remember(
-                        query_text, cache_key_str, req.sources, offset=offset, num_results=req.num_results
+                        query_text, cache_key_str, semantic_scope, offset=offset, num_results=req.num_results
                     )
                 except Exception:
                     pass

@@ -16,7 +16,10 @@ class SearchRequest(BaseModel):
     language: str | None = None
     country: str | None = None
     time_range: Literal["day", "week", "month", "year", "all"] = "all"
-    freshness: str | None = None
+    #: Accepted alias for ``time_range``. It used to be accepted, folded into
+    #: the cache key and then applied by nothing, so ``freshness=day`` returned
+    #: results of any age.
+    freshness: Literal["day", "week", "month", "year", "all"] | None = None
     domains: list[str] | None = None
     exclude_domains: list[str] | None = None
     offset: int = Field(0, ge=0, le=1000)
@@ -82,6 +85,8 @@ class SearchRequest(BaseModel):
         """
         if not self.q.strip():
             raise ValueError("q must not be blank")
+        if self.freshness and self.time_range == "all":
+            self.time_range = self.freshness
         return self
 
 
@@ -158,7 +163,7 @@ class SearchResponse(BaseModel):
     )
     suggestions: list[str] = Field(
         default_factory=list,
-        description="Query completions; only populated when `include_suggestions` is set.",
+        description="Reserved for query completions; currently always empty. Use /v1/suggest.",
     )
     semantic_cache_hit: bool = Field(
         False,
