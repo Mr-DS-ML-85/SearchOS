@@ -41,6 +41,20 @@ Optional Playwright/headless-Chromium service for SPA / heavy-JS pages. Falls ba
 ### postgres (pgvector)
 `documents`, `chunks` (vector embeddings), `api_keys`, `ingest_jobs`, usage. GIN FTS index (english config) + HNSW vector index. Migrations via Alembic on gateway startup.
 
+Two tables back the newer retrieval subsystems:
+
+| Table | Purpose | Notes |
+|---|---|---|
+| `images` | one CLIP-embedded image per URL | `vector(512)` plus a 64-bit `phash` for dedupe. `document_id` is `ON DELETE SET NULL` — an image outlives the page it was found on, since the image URL is the durable identifier. The hash is stored signed: Postgres `BIGINT` is signed, so an unsigned 64-bit value with the top bit set is rejected as out of range. |
+| `chunk_tokens` | one ColBERT vector **per token** | `vector(128)`, primary key `(chunk_id, position)`. 256 tokens/chunk ≈ 128 KB; measured at 392 MB for the whole corpus, against 10.9 GB for unprojected ColBERT. |
+
+`documents` also carries a 64-bit `simhash` for near-duplicate collapsing at query time, and a per-language tsvector (`lang`) so a German document is not stemmed by English rules.
+
+### Model weights
+CLIP (~600 MB), the cross-encoder and the text embedder are cached on the `modelcache` volume shared by gateway and worker. Without it every rebuild re-pulls ~800 MB and the first query after a restart pays ~310 s; with it, ~1.5 s.
+
+Image and ColBERT models are **lazy-loaded on first use**, not at startup, so deployments that never use those features do not pay for them in the boot path.
+
 ### redis
 Search/extract result cache (DB 1), rate-limit counters (DB 2), snippet queue.
 
@@ -48,6 +62,13 @@ Search/extract result cache (DB 1), rate-limit counters (DB 2), snippet queue.
 Live web fallback as a **cascade**: SearXNG → Tavily → Exa → Jina. The first tier that returns results wins; a tier answering with zero results counts as a miss and the next is tried, since an empty SERP usually means rate limiting. When every tier fails the cascade opens a cooldown so a request does not pay each dead upstream's timeout.
 
 Tavily works with no account via `X-Tavily-Access-Mode: keyless`. Exa is reached through its hosted MCP server (`mcp.exa.ai`) because its REST API returns 402 without a funded key. Jina requires a key. Every result is **persisted into `documents`** (`source='web'`) and re-crawled, so the index learns regardless of which tier served it.
+
+### federated peers (`FEDERATED_ENDPOINTS`)
+Other SearchOS instances queried alongside the local one. Results carry `source: federated:<peer>` and are merged with RRF, so a URL several independent indexes return outranks one only a single index found.
+
+Peers are ordinary remote gateways: **their URLs resolve from inside this gateway's container**, so `127.0.0.1:8001` refers to the gateway itself rather than the host. A peer that errors is recorded in `degraded` and then skipped without a live call for 30 s, so one unreachable peer cannot add its timeout to every query.
+
+Peer results are only useful if their title and snippet survive the trip — the local cross-encoder scores text, so a bare URL is unscoreable and gets dropped below `RERANK_MIN_SCORE`.
 
 ## Search pipeline
 
@@ -57,11 +78,21 @@ Tavily works with no account via `X-Tavily-Access-Mode: keyless`. Exa is reached
    - `vector` — pgvector cosine similarity (when an embedding model is configured).
    - `web` — the cascade, **skipped** when local strict matches ≥ `SEARXNG_LOCAL_MIN_HITS` and fresh (`SEARXNG_LOCAL_TTL_SECONDS`).
    - `searxng` / `tavily` / `exa` / `jina` — pin one tier; errors instead of falling back.
+   - `federated` — configured peers, merged with RRF.
 3. Reciprocal Rank Fusion merges ranked lists; **dedupes by normalized URL**, preferring indexed copies (local/vector) over live web snippets.
 4. A **cross-encoder** (`RERANK_MODEL`) rescores the top `RERANK_CANDIDATE_POOL` candidates. RRF yields a rank position, not a relevance measure — without this step good and nonsense queries returned near-identical scores. Title/freshness/domain boosts remain as the fallback when no cross-encoder is installed.
-5. Results below `RERANK_MIN_SCORE` are dropped; a best score under `RERANK_LOW_CONFIDENCE_SCORE` sets `low_confidence`.
-6. Web results are persisted; top `SEARCH_ENRICH_TOP_N` URLs enqueued for snippet enrichment.
-7. Response: `providers`, `degraded`, `top_score`, `low_confidence`, timing, `cache_hit`.
+5. If `COLBERT_ENABLED`, the top `COLBERT_TOP_N` are **rescored by late interaction (MaxSim)** against their best-matching chunk's token vectors and blended into the score at `COLBERT_WEIGHT`. It runs *after* the cross-encoder rather than instead of it, and the final sort uses the blended value so `score` decreases with `rank`. Candidates with no token vectors are kept in their existing order rather than dropped — a missing vector is an indexing gap, not evidence of irrelevance.
+6. Results below `RERANK_MIN_SCORE` are dropped; a best score under `RERANK_LOW_CONFIDENCE_SCORE` sets `low_confidence`. Near-duplicates (SimHash) are collapsed here.
+7. Web results are persisted; top `SEARCH_ENRICH_TOP_N` URLs enqueued for snippet enrichment.
+8. Response: `providers`, `degraded`, `top_score`, `low_confidence`, timing, `cache_hit`.
+
+A semantic cache sits in front of all of this: a rephrased query whose embedding is close to a cached one resolves to that entry's result (~18s → ~10–20ms). Entries are scoped by source and filters, so an answer recorded for `sources=all` can never satisfy a `sources=federated` request.
+
+> **Verify A/B changes with the cache flushed.** A cached response will happily serve you the previous ranking and a suspiciously fast `took_ms`:
+>
+> ```bash
+> curl -X POST localhost:8000/v1/admin/cache/flush -H "Authorization: Bearer $ADMIN_KEY"
+> ```
 
 ## Failure behavior
 
@@ -89,13 +120,21 @@ POST /v1/admin/ingest {url}
         ▼
   chunk_text → embed (bge-small-en-v1.5, local)
         │
+        ├──▶ index_chunk_tokens: ColBERT per-token vectors   [COLBERT_ENABLED]
+        │
         ▼
   upsert document + chunks → status=indexed
+        │
+        ▼
+  index_page_images: rank <img> by declared size, drop SVG/   [images extra]
+  icons, fetch survivors, CLIP-embed → images
         │
         ▼
   _discover_and_enqueue: extract <a href>, dedupe against
   indexed docs + active jobs, enqueue depth+1 (same-domain policy)
 ```
+
+Both new steps are best-effort and non-fatal: a page whose images cannot be fetched or embedded still indexes as a document.
 
 ## MCP server
 

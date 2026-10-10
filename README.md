@@ -4,7 +4,7 @@
 
 <p align="center">
   <b>Self-hosted search API for AI agents.</b><br/>
-  Your own FTS + vector index, live web fallback, continuous recursive crawler, and an MCP server — no vendor lock-in, no per-query fees, no data leaving your infra.
+  Your own FTS + vector index, image search, late-interaction ranking, federated peers, live web fallback, continuous recursive crawler, and an MCP server — no vendor lock-in, no per-query fees, no data leaving your infra.
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 257 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 276 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -48,19 +48,28 @@ SearchOS builds a production-grade, fully self-hosted search API from open-sourc
 | LLM-ready output | no | yes | yes | yes | **yes (clean text/markdown)** |
 | Content extraction | no | yes | yes | yes | **yes (robots-respecting)** |
 | MCP server | — | — | — | — | **yes (stdio + SSE + Streamable HTTP)** |
+| Image / multimodal search | — | — | limited | limited | **yes (CLIP, text→image + image→image)** |
 | Own your data | no | no | no | no | **yes (full index export)** |
 
 ## Features
 
 - **Own search index** — Postgres FTS (`ts_rank_cd`, english config) + pgvector HNSW embeddings, fused with Reciprocal Rank Fusion.
 - **Cross-encoder reranking** — candidates are rescored by a real relevance model (`cross-encoder/ms-marco-MiniLM-L6-v2`), so good and bad matches no longer return near-identical scores. Results below a threshold are dropped and weak result sets are flagged `low_confidence`.
+- **Image and multimodal search** — CLIP embeds images and text into one vector space, so `/v1/images/search` finds images by *what they depict* from a text query, or finds images like another image. Images are discovered while crawling; icons, SVGs and undersized assets are filtered out.
+- **Late-interaction ranking (ColBERT)** — optional, token-level MaxSim scoring blended with the cross-encoder. A single pooled vector per chunk can only express "how similar are the centroids"; MaxSim asks how much of the query is covered at token level. Off by default because it costs ~128KB per chunk.
+- **Federated search** — query several SearchOS instances at once and merge with RRF, so a URL several independent indexes return scores higher than one only a single index found. Dead peers are skipped with a cooldown instead of adding their timeout to every query.
 - **Web fallback cascade** — SearXNG is primary; when it fails, is rate-limited, or returns an empty SERP, the request falls through to **Tavily** (free, no account needed), **Exa** (via its hosted MCP server), then **Jina**. The first tier that answers wins, and an exhausted chain opens a cooldown so a request never pays every dead upstream's timeout.
 - **Live web fallback that learns** — when local coverage is thin, SearXNG results are merged in, **saved into your index, and re-crawled**, so repeat queries are served instantly without re-hitting the web.
+- **Semantic query cache** — a rephrased query ("consensus in distributed systems" → "how does paxos agree") resolves through the cache instead of re-running the pipeline: ~18s became ~10–20ms. Scoped by source and filters so a cached whole-corpus answer can never satisfy a pinned-provider query.
+- **Search operators** — `site:`, `-site:`, `filetype:`, quoted phrases, and plain-term `OR`.
+- **Near-duplicate detection** — a 64-bit SimHash per document collapses syndicated copies at query time, so a corpus that re-publishes one press release does not return it six times.
 - **Continuous recursive crawler** — follows nested same-domain links (depth-limited), plus automatic **re-crawl of stale pages** so your index stays fresh.
+- **Per-language full-text search** — documents are language-detected and stored in a per-language tsvector, so a German document is not matched by English stemming rules.
 - **Embedding backfill** — enabling embeddings on an existing corpus drains missing vectors in the background, so documents indexed while the embedder was unavailable are not stranded without semantic search.
 - **LLM-ready extraction** — clean markdown/text/json from HTML, PDF, and JS-rendered pages (headless renderer), robots.txt-aware, with an SSRF guard that resolves each host before connecting.
 - **MCP server** — expose search, extract, ingest, stats and health to any AI agent over **stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP** (2026-07-28 spec). The HTTP transport is bearer-token protected; stdio is a local process.
 - **Production ops** — Redis cache + rate limits, auth (hashed API keys), Prometheus/Grafana metrics, Alembic migrations, and network segmentation so data services have no route off the host.
+- **Reproducible evaluation** — `tools/eval_retrieval.py` scores the index against a judged query set with nDCG@10, MRR@10, recall@50 and an abstention check, so retrieval changes can be measured rather than argued about.
 
 ## Quick start
 
@@ -240,6 +249,41 @@ A tier that answers with **zero results** does not stop the chain — it counts 
 
 Each tier is also addressable on its own (`sources=searxng|tavily|exa|jina`), which errors rather than silently falling back, so an empty result means that upstream genuinely had nothing. See [docs/searxng.md](docs/searxng.md).
 
+### Late interaction (ColBERT, optional)
+
+A single pooled vector per chunk has to compress a whole passage into one point in space, so relevance reduces to "how similar are the centroids". ColBERT keeps **one vector per token** and scores with MaxSim — for each query token take the best-matching document token, then sum — which asks how much of the query is *covered*.
+
+Storage is the reason it is off by default. Measured on this codebase's corpus:
+
+| Configuration | per chunk | corpus total |
+|---|---|---|
+| `colbertv2.0`, 512 tokens × 768d fp32 | 1536 KB | 10.9 GB |
+| projected, 256 tokens × 128d fp32 | 128 KB | **0.9 GB** |
+
+So tokens are projected to 128 dimensions using ColBERT's own trained head (transformers reports that head as an unexpected key, so it is read from the checkpoint directly — a random projection would produce plausible scores from vectors that no longer share a space) and capped at 256 tokens. fp16 would halve the figure again but the pinned `pgvector-python` only exposes `HalfVector` as a value wrapper, not a column type.
+
+MaxSim runs **after** the cross-encoder, blended into the score, and the sort uses the blended value — so `score` always decreases with `rank`. Reordering without rescoring left the top result carrying the *lowest* score, which breaks any caller filtering on `score`.
+
+`COLBERT_WEIGHT=30` is calibrated, not guessed: MaxSim lands around 0.06–0.09 (it is divided by query token count) while cross-encoder logits are 3–6, so at the original weight of 2 the ColBERT term moved a score by ~0.16 and never changed a single ordering.
+
+### Federated search
+
+Query several instances at once and merge with RRF, so a URL that several independent indexes return scores higher than one only a single index found. Results carry `source: federated:<peer>`.
+
+```bash
+FEDERATED_ENDPOINTS=team-a=http://peer-a:8000,shared=http://shared:8000
+```
+
+**Peer URLs resolve from inside the gateway container**, so `127.0.0.1:8001` is the gateway itself, not the host — use a compose service name or `host.docker.internal`. A peer that errors is recorded in `degraded` and then skipped without a live call for 30s, so one dead peer cannot add its timeout to every query.
+
+### Image search
+
+CLIP embeds images and text into one space, so text→image and image→image are the same cosine search rather than separate machinery.
+
+Images are discovered while crawling, and picking them well matters more than it sounds: a page's first dozen `<img>` tags are its logo, edit shields and badges, not its photograph. Candidates are therefore ranked by **declared size** rather than document order, and SVG and icon-named assets are dropped — Wikimedia serves icons as `<name>.svg.png`, so a raster-looking suffix does not mean it is a photo.
+
+Requires the `images` extra (Pillow). CLIP is lazy-loaded on the first image query, not at startup, so deployments that never search images do not pay a ~600MB download in their boot path.
+
 ### Failure behavior
 
 - A failing provider degrades the response (marked in `degraded`) instead of failing the request.
@@ -257,13 +301,13 @@ Full reference in [docs/api.md](docs/api.md).
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | — | search query (required) |
-| `sources` | `all`\|`local`\|`vector`\|`web`\|`searxng`\|`tavily`\|`exa`\|`jina` | `all` | which providers to query; `web` is the whole cascade |
+| `sources` | `all`\|`local`\|`vector`\|`web`\|`searxng`\|`tavily`\|`exa`\|`jina`\|`federated` | `all` | which providers to query; `web` is the whole cascade, the others pin one upstream |
 | `num_results` | int 1–50 | 10 | results to return |
 | `language` | string | — | e.g. `en`, `de` |
 | `country` | string | — | e.g. `us` |
 | `time_range` | `day`\|`week`\|`month`\|`year`\|`all` | `all` | freshness filter |
 | `domains` / `exclude_domains` | list[string] | — | domain restrictions |
-| `offset` | int | 0 | pagination offset |
+| `offset` / `cursor` | int / string | 0 | pagination; prefer `cursor` for deep pages (see below) |
 | `cache` | bool | `true` | enable the Redis result cache |
 
 ```json
@@ -314,6 +358,36 @@ Full reference in [docs/api.md](docs/api.md).
 
 Respects robots.txt, follows redirects, handles HTML (trafilatura), PDF (pypdf), and plain text. Results cached 1 hour.
 
+### `GET /v1/images/search`
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `q` | string | — | text query — text→image search |
+| `image_url` | string | — | reference image — image→image search |
+| `limit` | int 1–50 | 10 | images to return |
+
+Provide `q` **or** `image_url`. CLIP puts images and text in one vector space, so both directions are the same operation rather than separate machinery. Image URLs are fetched through the same egress guard as every other outbound request, so this is not an SSRF path.
+
+```bash
+curl -s -G localhost:8000/v1/images/search \
+  --data-urlencode "q=a white arctic fox in snow" \
+  -H "Authorization: Bearer sk_..."
+```
+
+Check `image_search_available` in the response — `false` means the `images` extra (Pillow) is not installed, which is a degraded mode rather than an empty index.
+
+### `GET /v1/suggest`, `GET /v1/popular`, `GET /v1/recent`
+
+`/v1/suggest?q=...` returns prefix completions from indexed titles, for search-as-you-type.
+
+`/v1/popular` returns the most-run queries, from the live Redis query counter — so it reflects current traffic, not history. `/v1/recent` returns documents the crawler indexed or re-crawled in the last `hours` (default 24): the recrawler already knows what changed, and this exposes it as a "what's new" feed that `search` cannot answer.
+
+Both require authentication, but neither is scoped to the calling key — they are corpus-wide, so treat them as shared state.
+
+### Pagination
+
+Use `cursor` from a previous response rather than `offset` for anything past the first few pages. Postgres makes `OFFSET` walk and discard every skipped row, so page 50 costs roughly 50× page 1. `has_more` disambiguates "no matches" from "you paged past the end".
+
 ### Admin + ops
 
 - `POST /v1/admin/ingest` (admin) — enqueue a URL or sitemap for crawling/indexing.
@@ -359,6 +433,16 @@ Everything is environment-driven (`.env`). Key variables:
 | `RERANK_MIN_SCORE` | `3.0` | drop results below this **logit** (see *Reranking*) |
 | `RERANK_LOW_CONFIDENCE_SCORE` | `4.5` | below this the response is flagged `low_confidence` |
 | `RERANK_CANDIDATE_POOL` | `30` | candidates scored; the tail cannot reach the page |
+| `COLBERT_ENABLED` | `0` | late-interaction reranking; needs the token index populated |
+| `COLBERT_MODEL` | `colbert-ir/colbertv2.0` | late-interaction model |
+| `COLBERT_TOP_N` | `50` | candidates rescored by MaxSim |
+| `COLBERT_WEIGHT` | `30.0` | blend weight vs the cross-encoder (calibrated — see below) |
+| `IMAGE_MIN_DIMENSION` | `128` | smaller images (icons, tracking pixels) are not indexed |
+| `IMAGE_MAX_PER_DOCUMENT` | `12` | images embedded per crawled page |
+| `FEDERATED_ENDPOINTS` | — | comma-separated `name=url` peers, e.g. `team-a=http://peer-a:8000` |
+| `FEDERATED_API_KEY` | — | bearer token sent to peers |
+| `DEDUPE_NEAR_DUPLICATES` | `true` | collapse SimHash near-duplicates at query time |
+| `SEMANTIC_CACHE_*` | see `.env.example` | paraphrase-aware query cache |
 | `SEARCH_ENRICH_TOP_N` | `15` | web results queued for full-text enrichment |
 | `SEARCH_CACHE_TTL_SECONDS` | `300` | result cache TTL |
 | `SEARCH_NEGATIVE_CACHE_TTL_SECONDS` | `30` | shorter TTL for empty/low-confidence answers |
@@ -381,6 +465,23 @@ After enabling it on an existing corpus, the backfill loop drains missing vector
 ```bash
 docker compose logs -f worker | grep backfill
 ```
+
+## Evaluation
+
+Retrieval changes are easy to argue about and hard to measure. `tools/eval_retrieval.py` scores the index against a judged query set so a change can be evaluated rather than eyeballed:
+
+```bash
+# score the index against the judged query set
+python tools/eval_retrieval.py --api-key sk_...
+
+# compare two runs, which is how a retrieval change should be argued for
+python tools/eval_retrieval.py --json before.json
+python tools/eval_retrieval.py --baseline before.json --json after.json
+```
+
+Flags: `--set` (which query set), `--sources` (pin providers), `--k`, `--timeout`, `--gateway`.
+
+Each judged query carries its relevant URLs and whether the system is expected to *abstain*. Abstention matters as much as ranking: a search engine that confidently returns three loosely-related documents for a nonsense query is worse than one that returns none, and a metric that only rewards hits cannot see that difference.
 
 ## Development
 
@@ -438,15 +539,18 @@ python tools/gen_banner.py     # docs/assets/banner.svg + .png
 
 - **Scaling**: stateless gateway → add replicas behind a load balancer; workers scale horizontally (jobs use `FOR UPDATE SKIP LOCKED` polling).
 - **Migrations**: Alembic runs automatically on gateway startup. Manual: `docker compose exec gateway alembic upgrade head`.
-- **Backups**: `pgdata`, `redisdata`, `promdata` volumes; `pg_dump` on postgres.
+- **Backups**: `pgdata`, `redisdata`, `promdata`, `modelcache` volumes; `pg_dump` on postgres.
+- **Model weights** live on the `modelcache` volume. Without it every rebuild re-pulls ~800MB and the first query after a restart pays ~310s of download; with it, ~1.5s.
 - **Monitoring**: Grafana `http://localhost:3000` (admin/admin), dashboard "SearchOS Overview". Prometheus alerts: gateway down, 5xx spikes, provider failures, p95 latency, queue backlog, rate-limit storms.
 - **Logs**: structured single-line logs with request IDs (`X-Request-Id`).
 
 ## Roadmap
 
+- **Knowledge graph** — entity and relation extraction over the crawled corpus, with graph traversal alongside the existing search.
+- Per-token storage in fp16 (halves the ColBERT index) once `pgvector-python` exposes `HalfVector` as a column type.
 - Scheduled re-crawl and freshness scoring over your own index.
 - Streaming responses and typed structured-output queries.
-- More SERP features ported into the own index: geo/local relevance, site: operators, autocomplete.
+- Geo/local relevance, and more SERP features ported into the own index.
 - Per-provider retry/backoff policies and per-site crawl-rate throttling in the worker.
 
 ## License

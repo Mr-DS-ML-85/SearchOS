@@ -153,6 +153,9 @@ curl -s -X POST http://localhost:8000/v1/admin/keys \
 `/v1/recent` is what a "what's new" feed needs; the recrawl loop already knows
 what changed, and `search` cannot express it.
 
+All three require authentication but are **corpus-wide**, not scoped to the
+calling key — treat their output as shared state rather than per-user history.
+
 ## Image and multimodal search
 
 CLIP embeds images and text into one vector space, so an image can be found by

@@ -105,6 +105,31 @@ curl -s "http://localhost:8000/v1/search?q=vector+database&num_results=5" \
   -H "Authorization: Bearer sk_..."
 ```
 
+Operators are supported: `site:example.com`, `-site:spam.com`, `filetype:pdf`,
+`"exact phrase"`, and plain-term `OR`.
+
+### Find images
+
+Images indexed while crawling are searchable by what they depict, via CLIP:
+
+```bash
+curl -s -G "http://localhost:8000/v1/images/search" \
+  --data-urlencode "q=a white arctic fox in snow" \
+  -H "Authorization: Bearer sk_..."
+```
+
+Pass `image_url=` instead of `q=` to find images like another image. Both
+directions are the same endpoint because CLIP embeds text and images into one
+space.
+
+Check `image_search_available` in the response — `false` means the `images`
+extra (Pillow) is not installed, which is a degraded mode rather than an empty
+index.
+
+> Both endpoints lazy-load their model on first use, so the first query after a
+> fresh start is slow (seconds) and later ones are fast. Weights are cached on
+> the `modelcache` volume, so this cost is paid once per rebuild, not per query.
+
 ## 7. Connect an agent via MCP
 
 ```bash
