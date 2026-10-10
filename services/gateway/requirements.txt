@@ -16,3 +16,4 @@ python-dotenv>=1.0
 defusedxml>=0.7
 # Optional: enables the vector provider (pulls torch, ~3 GB).
 # See pyproject.toml [project.optional-dependencies].embeddings
+pillow>=10.0

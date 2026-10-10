@@ -95,6 +95,36 @@ class Chunk(Base):
     document: Mapped[Document] = relationship(back_populates="chunks")
 
 
+class Image(Base):
+    """A CLIP-embedded image, either uploaded or discovered on an indexed page."""
+
+    __tablename__ = "images"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("documents.id", ondelete="SET NULL"), index=True)
+    source_url: Mapped[str] = mapped_column(Text, index=True)
+    url: Mapped[str] = mapped_column(Text, unique=True)
+    alt_text: Mapped[str | None] = mapped_column(Text)
+    content_type: Mapped[str | None] = mapped_column(String(64))
+    byte_size: Mapped[int | None] = mapped_column(Integer)
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=True)
+    #: Perceptual hash; dedupes the same asset reached via many pages.
+    phash: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="indexed")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+Image.__table__.append_constraint(
+    Index(
+        "ix_images_embedding",
+        text("embedding vector_cosine_ops"),
+        postgresql_using="hnsw",
+    )
+)
+
+
 class IngestJob(Base):
     __tablename__ = "ingest_jobs"
 

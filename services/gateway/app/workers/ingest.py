@@ -229,6 +229,8 @@ async def process_ingest_job(session_factory: async_sessionmaker, job: IngestJob
             f"{len(vectors)} vectors" if vectors else "no vectors (keyword-only)",
         )
 
+        await _index_page_images(session_factory, job, page, content)
+
         await _discover_and_enqueue(session_factory, job, page)
 
         # The corpus just changed, so any cached search result is now stale.
@@ -502,6 +504,37 @@ def _allowed_by_domain_policy(policy: str, target_host: str, seed_host: str) -> 
     if policy == "same":
         return target_host == seed_host or target_host.endswith("." + seed_host)
     return False
+
+
+async def _index_page_images(session_factory, job, page, content: str) -> None:
+    """Embed the images on a freshly indexed page. Best effort, never fatal."""
+    settings = get_settings()
+    if not settings.images_enabled:
+        return
+    try:
+        html = page.content.decode("utf-8", errors="ignore")
+    except Exception:
+        return
+    try:
+        async with session_factory() as session:
+            from app.models import Document
+
+            doc_id = await session.scalar(select(Document.id).where(Document.url == job.url))
+    except Exception:
+        return
+    if not doc_id:
+        return
+    try:
+        from app.search.image_index import index_images_for_page
+
+        await index_images_for_page(
+            session_factory,
+            document_id=doc_id,
+            source_url=job.url,
+            html=html,
+        )
+    except Exception as exc:
+        logger.debug("image indexing failed for %s: %s", job.url, exc)
 
 
 async def _discover_and_enqueue(session_factory: async_sessionmaker, job: IngestJob, page) -> None:

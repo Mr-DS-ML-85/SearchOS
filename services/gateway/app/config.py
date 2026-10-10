@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     local_index_vector_weight: float = 0.4
 
     embedding_model: str = "BAAI/bge-small-en-v1.5"
+    # CLIP for image/multimodal search. Separate from the text embedder:
+    # they are different vector spaces and are never compared.
+    clip_model: str = "openai/clip-vit-base-patch32"
+    # Images smaller than this are usually icons or tracking pixels.
+    image_min_dimension: int = 128
+    image_max_bytes: int = 8_000_000
+    image_max_per_document: int = 12
+    images_enabled: bool = True
     embedding_device: str = "cpu"
     embedding_batch_size: int = 16
 

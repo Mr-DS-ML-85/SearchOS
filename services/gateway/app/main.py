@@ -11,7 +11,7 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import admin, discovery, extract, health, search
+from app.api import admin, discovery, extract, health, images, search
 from app.api.deps import current_api_key
 from app.config import get_settings
 from app.db import close_engine, get_session_factory, init_engine
@@ -104,6 +104,9 @@ async def lifespan(app: FastAPI):
                 logger.info("embedding model warm: %s", settings.embedding_model)
             except Exception as exc:
                 logger.warning("embedding model warm failed: %s: %s", exc.__class__.__name__, exc)
+        # CLIP is loaded lazily on first image query, not here. Warming it at
+        # startup pulled a ~600MB download into the boot path and made every
+        # deployment pay for a feature most deployments never use.
         if settings.rerank_enabled and settings.rerank_model:
             try:
                 from app.search.rerank import get_cross_encoder
@@ -354,6 +357,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router, prefix="", dependencies=api_deps)
     app.include_router(extract.router, prefix="", dependencies=api_deps)
     app.include_router(discovery.router, prefix="", dependencies=api_deps)
+    app.include_router(images.router, prefix="", dependencies=api_deps)
     app.include_router(admin.router, prefix="", dependencies=api_deps)
 
     @app.get("/")

@@ -51,6 +51,10 @@ class Metrics:
             buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
         )
         self.documents_indexed = Counter("searchos_documents_indexed_total", "Documents indexed")
+        self.images_indexed = Counter(
+            "searchos_images_indexed_total",
+            "Images embedded with CLIP",
+        )
         self.federated_peer_errors = Counter(
             "searchos_federated_peer_errors_total",
             "Failed federated peer calls, by peer",

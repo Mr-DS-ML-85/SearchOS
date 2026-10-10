@@ -153,6 +153,30 @@ curl -s -X POST http://localhost:8000/v1/admin/keys \
 `/v1/recent` is what a "what's new" feed needs; the recrawl loop already knows
 what changed, and `search` cannot express it.
 
+## Image and multimodal search
+
+CLIP embeds images and text into one vector space, so an image can be found by
+what it *depicts* rather than by its filename or alt text.
+
+```bash
+curl -G /v1/images/search --data-urlencode "q=a white arctic fox in snow"
+curl -G /v1/images/search --data-urlencode "image_url=https://example.com/photo.jpg"
+```
+
+`q` is text-to-image; `image_url` is image-to-image. Both take the same endpoint
+because CLIP makes them the same operation — a cosine search against image
+vectors. Image URLs are fetched through the same egress guard as every other
+outbound request, so this is not an SSRF path.
+
+Images are discovered on indexed pages automatically: the crawler takes the
+largest-declared `<img>` candidates (not the first N, which on a typical page is
+the logo and edit shields), skips SVG and icon assets, drops anything below
+`image_min_dimension`, and embeds what survives.
+
+Requires the `images` extra (Pillow). `image_search_available` in the response is
+`false` when it is not installed — that is a degraded mode, not an empty index,
+so check it before concluding there are no images.
+
 ## Federated search
 
 Queries several SearchOS instances at once, for a team that wants its private

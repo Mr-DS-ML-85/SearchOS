@@ -196,6 +196,10 @@ services:
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
     volumes:
       - prommultiproc:/tmp/prometheus
+      # Keeps downloaded model weights (CLIP ~600MB, cross-encoder, bge) across
+      # container rebuilds. Without this every `docker compose up` re-pulled
+      # ~800MB and the first query after a restart paid ~90s of download.
+      - modelcache:/home/searchos/.cache/huggingface
     depends_on:
       postgres:
         condition: service_healthy
@@ -277,6 +281,7 @@ services:
       BOOTSTRAP_ADMIN_API_KEY: ${BOOTSTRAP_ADMIN_API_KEY:?set BOOTSTRAP_ADMIN_API_KEY in .env}
     volumes:
       - promtoken:/token
+      - modelcache:/home/searchos/.cache/huggingface
     networks:
       - observability
     restart: "no"
@@ -353,6 +358,7 @@ networks:
   observability:
 
 volumes:
+  modelcache:
   prommultiproc:
   promtoken:
   pgdata:

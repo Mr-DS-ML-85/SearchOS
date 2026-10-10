@@ -38,6 +38,13 @@ test = [
 embeddings = [
     "sentence-transformers>=2.7",
 ]
+# Opt-in: CLIP for image/multimodal search. Pillow is needed to decode images;
+# torchvision is deliberately NOT included — CLIPImageProcessor requires it, and
+# the preprocessing here is done with numpy instead, which avoids a ~800MB
+# dependency for four lines of resize/normalise.
+images = [
+    "pillow>=10.0",
+]
 full = [
     "sentence-transformers>=2.7",
     "pytest>=8.0",
