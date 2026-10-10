@@ -61,6 +61,37 @@ select count(*) from documents where source = 'web';
 select meta from documents where source = 'web' limit 3;
 ```
 
+## Web fallback chain
+
+`sources=web` is served by a cascade, not by SearXNG alone. Tiers are tried in
+order and the first that answers wins:
+
+1. **SearXNG** — primary
+2. **Tavily** — free without any account via `X-Tavily-Access-Mode: keyless`
+3. **Exa** — requires a key; the REST API returns 402 without one
+4. **Jina** — requires a key; `s.jina.ai` returns 401 without one
+
+A tier that answers with zero results does not stop the chain: it counts as a
+miss and the next tier is tried, since an empty SERP is usually a rate limit
+rather than a genuine "nothing exists".
+
+When every tier fails the cascade opens a cooldown
+(`SEARCH_CASCADE_COOLDOWN_SECONDS`, default 30) and returns immediately for that
+window instead of paying the timeout of each dead tier. A single successful
+search clears it, so a recovered service is used again at once.
+
+Only SearXNG and a configured key add a tier, so a stock install behaves
+exactly as before. `TAVILY_KEYLESS` is the one that changes that default: it puts
+a credential-free commercial tier in the chain out of the box. Set it to `false`
+to require a Tavily key.
+
+Search responses carry which tier answered, under `raw` in the provider path:
+
+```bash
+docker compose logs gateway | grep "web served by"
+# web served by tavily after 2 tier(s): rust tokio async runtime scheduler
+```
+
 ## Notes
 
 - SearXNG instances rate-limit agents that send identical queries repeatedly — the persistence + local-skip behavior exists specifically to avoid that.

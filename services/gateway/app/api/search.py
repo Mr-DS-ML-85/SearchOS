@@ -40,12 +40,18 @@ def build_orchestrator():
         if embedding.available:
             orchestrator.providers["vector"] = VectorIndexProvider(session_factory, embedding)
 
-    if settings.searxng_url:
-        from app.search.providers.searxng import SearXNGProvider
+    if settings.searxng_url or settings.search_cascade_enabled:
+        from app.search.providers.cascade import build_cascade
 
-        orchestrator.providers["web"] = SearXNGProvider(
-            get_session_factory(), settings.searxng_url, settings.searxng_timeout_seconds
-        )
+        cascade = build_cascade(settings)
+        if cascade is not None:
+            orchestrator.providers["web"] = cascade
+        elif settings.searxng_url:
+            from app.search.providers.searxng import SearXNGProvider
+
+            orchestrator.providers["web"] = SearXNGProvider(
+                get_session_factory(), settings.searxng_url, settings.searxng_timeout_seconds
+            )
     return orchestrator
 
 

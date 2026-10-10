@@ -83,6 +83,27 @@ class Settings(BaseSettings):
 
     searxng_url: str = ""
     searxng_timeout_seconds: float = 12.0
+    # Ordered fallbacks used when SearXNG fails or is in cooldown. First one
+    # that answers wins; an unconfigured tier is skipped. The local FTS and
+    # vector providers are unaffected by this chain.
+    tavily_api_key: str = ""
+    # Tavily serves /search with no account via an X-Tavily-Access-Mode: keyless
+    # header, so the tier is available on a fresh install. Set false to require
+    # a key.
+    tavily_keyless: bool = True
+    tavily_timeout_seconds: float = 12.0
+    # basic is ~4x faster than advanced. The cross-encoder reranks downstream,
+    # so Tavily's deeper pass is not worth the latency in a fallback tier.
+    tavily_search_depth: str = "basic"
+    exa_api_key: str = ""
+    exa_timeout_seconds: float = 12.0
+    jina_api_key: str = ""
+    jina_timeout_seconds: float = 20.0
+    # After the whole chain fails, refuse live attempts for this long and serve
+    # the degraded local result instead. Without it every request pays the full
+    # timeout of every dead tier.
+    search_cascade_cooldown_seconds: float = 30.0
+    search_cascade_enabled: bool = True
     searxng_local_ttl_seconds: int = 3600
     searxng_local_min_hits: int = 3
 

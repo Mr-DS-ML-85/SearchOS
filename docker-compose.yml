@@ -172,6 +172,13 @@ services:
       RENDERER_URL: ${RENDERER_URL:-http://renderer:8010}
       RENDERER_TOKEN: ${RENDERER_TOKEN}
       SEARXNG_URL: ${SEARXNG_URL:-}
+      # Web fallback chain. SearXNG is primary; these are tried in order when it
+      # fails. Unset keys simply drop that tier from the chain.
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      EXA_API_KEY: ${EXA_API_KEY:-}
+      JINA_API_KEY: ${JINA_API_KEY:-}
+      SEARCH_CASCADE_ENABLED: ${SEARCH_CASCADE_ENABLED:-true}
+      SEARCH_CASCADE_COOLDOWN_SECONDS: ${SEARCH_CASCADE_COOLDOWN_SECONDS:-30}
       BOOTSTRAP_ADMIN_API_KEY: ${BOOTSTRAP_ADMIN_API_KEY:?set BOOTSTRAP_ADMIN_API_KEY in .env}
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
