@@ -105,7 +105,31 @@ class TestToolCatalogue:
             "suggest",
             "popular",
             "recent",
+            "cache_flush",
         }
+
+    def test_admin_tools_require_the_admin_key(self, _reload_mcp):
+        """ingest and cache_flush act on the index; neither may run without one.
+
+        cache_flush is easy to overlook as a privileged call — it discards every
+        cached response, so an unauthenticated agent could force re-queries
+        against the whole corpus and make the gateway re-run expensive stages.
+        """
+        import asyncio
+
+        module = _reload_mcp
+        original = module.SEARCHOS_ADMIN_KEY
+        try:
+            module.SEARCHOS_ADMIN_KEY = ""
+            for name, handler in (
+                ("ingest", module.handle_ingest),
+                ("cache_flush", module.handle_cache_flush),
+            ):
+                result = asyncio.run(handler(FakeCtx(), FakeParams(name, {})))
+                assert result.is_error, f"{name} ran without an admin key"
+                assert "ADMIN_KEY" in result.content[0].text
+        finally:
+            module.SEARCHOS_ADMIN_KEY = original
 
     def test_search_sources_enum_matches_the_gateway(self, _reload_mcp):
         """The MCP enum must track the gateway, not its own history.

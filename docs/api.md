@@ -204,6 +204,13 @@ Scores are blended with the cross-encoder (`COLBERT_WEIGHT`) rather than
 replacing them, and the sort uses the blended value, so `score` always decreases
 with `rank`.
 
+**Measured outcome: a regression, so this is off by default.** Against the judged
+query set, nDCG@10 is 0.6331 with ColBERT off, 0.6235 at weight 5, and 0.5760 at
+weight 30 — with recall unchanged and p50 latency roughly tripling. MaxSim is
+reordering results without retrieving anything the cross-encoder had missed. Do
+not enable it expecting better ranking without re-running the benchmark against
+your own corpus.
+
 ## Federated search
 
 Queries several SearchOS instances at once, for a team that wants its private

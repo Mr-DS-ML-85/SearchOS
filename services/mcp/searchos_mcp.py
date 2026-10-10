@@ -265,6 +265,16 @@ def _tools() -> list[types.Tool]:
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
         types.Tool(
+            name="cache_flush",
+            description=(
+                "Drop cached search/extract results. Use after an ingest when you want "
+                "the new document visible immediately — otherwise a cached response for "
+                "the same query is served until it expires and the crawl looks like it "
+                "failed. Requires the admin API key."
+            ),
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        ),
+        types.Tool(
             name="search_images",
             description=(
                 "Find images by what they depict. CLIP embeds images and text into one "
@@ -546,6 +556,27 @@ async def handle_recent(ctx: ServerRequestContext, params: types.CallToolRequest
     return text_result(json.dumps(body.get("documents", []), indent=2, ensure_ascii=False))
 
 
+async def handle_cache_flush(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
+    """Drop cached search/extract results.
+
+    Needed after an ingest when you want to see the new document immediately:
+    ingest saves into the index, but a cached response for the same query keeps
+    being served until it expires. Without this an agent that just crawled a
+    page and then searched for it gets the pre-crawl answer and concludes the
+    crawl failed.
+    """
+    if not SEARCHOS_ADMIN_KEY:
+        return text_result(
+            "cache_flush requires SEARCHOS_ADMIN_KEY env var (the gateway admin API key)",
+            is_error=True,
+        )
+    try:
+        body = await gateway_call("POST", "/v1/admin/cache/flush", json_body={}, key=SEARCHOS_ADMIN_KEY)
+    except GatewayError as e:
+        return text_result(str(e), is_error=True)
+    return text_result(json.dumps(body, indent=2, ensure_ascii=False))
+
+
 def build_server() -> Server:
     server = Server(
         "searchos",
@@ -581,6 +612,7 @@ async def _call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPar
         "suggest": handle_suggest,
         "popular": handle_popular,
         "recent": handle_recent,
+        "cache_flush": handle_cache_flush,
     }
     handler = handlers.get(params.name)
     if handler is None:

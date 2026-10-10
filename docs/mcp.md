@@ -15,6 +15,20 @@
 | `suggest` | `GET /v1/suggest` | prefix completions from indexed titles |
 | `popular` | `GET /v1/popular` | most-run queries from the live Redis counter |
 | `recent` | `GET /v1/recent` | documents the crawler indexed or re-crawled recently |
+| `cache_flush` | `POST /v1/admin/cache/flush` | drop cached results so a fresh ingest is visible at once (needs admin key) |
+
+Four gateway routes are deliberately **not** exposed as tools:
+
+| Route | Why not |
+|---|---|
+| `/health/live`, `/health/ready` | orchestrator probes; `/health` covers an agent |
+| `/metrics` | Prometheus scrape endpoint, not agent-facing |
+| `/v1/admin/keys` | key minting is a privilege an agent should not self-grant |
+
+Everything else is wrapped. `ingest` and `cache_flush` both act on the index and
+both refuse to run without `SEARCHOS_ADMIN_KEY`; `cache_flush` in particular
+discards every cached response, so an unauthenticated caller could otherwise
+force re-queries across the whole corpus.
 
 The MCP server is a **translator**, not a second API: the gateway exposes no MCP
 endpoint itself. Every tool above is a thin wrapper over one REST route, so
@@ -205,7 +219,7 @@ MCP's July 2026 spec revision made the protocol stateless over HTTP (full change
 SDK 2.0's `Server` runs a dual-era loop, so one instance serves both handshake-era and modern clients. Verified live:
 
 - `POST /mcp` → `server/discover` → `result_type="complete"`, `supported_versions=["2026-07-28"]`
-- `tools/list`, `tools/call` (all nine tools) work over both eras
+- `tools/list`, `tools/call` (all ten tools) work over both eras
 
 ## Env vars
 

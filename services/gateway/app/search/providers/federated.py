@@ -39,6 +39,33 @@ logger = get_logger("search.providers.federated")
 _OUTAGE_SECONDS = 30.0
 
 
+def _describe_failure(exc: Exception, settings) -> str:
+    """Turn a peer exception into something an operator can act on.
+
+    The failure list surfaced only the exception class, so a peer rejecting our
+    credentials came back as "peer-a: HTTPStatusError" — indistinguishable from
+    a timeout, a DNS failure or a 500. The missing-key case was the expensive
+    one: FEDERATED_ENDPOINTS set, FEDERATED_API_KEY unset, and the only clue was
+    the generic "All search providers failed: federated".
+    """
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (401, 403):
+            if not (settings.federated_api_key or settings.bootstrap_admin_api_key):
+                return f"HTTP {status} — no credential configured. Set FEDERATED_API_KEY (the peer requires auth)"
+            return f"HTTP {status} — the configured credential was rejected by the peer"
+        if status == 404:
+            return "HTTP 404 — peer does not expose /v1/search (is it a SearchOS gateway?)"
+        return f"HTTP {status}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout — peer did not respond in time"
+    if isinstance(exc, httpx.ConnectError):
+        return "connection refused — peer URL unreachable from this container (check the host/port)"
+    return f"{exc.__class__.__name__}"
+
+
 class FederatedProvider(SearchProvider):
     """Fan out to remote SearchOS gateways and merge with RRF."""
 
@@ -98,7 +125,7 @@ class FederatedProvider(SearchProvider):
                     payload = resp.json()
                 except Exception as exc:
                     self._down_until[name] = time.monotonic() + _OUTAGE_SECONDS
-                    failures.append(f"{name}: {exc.__class__.__name__}")
+                    failures.append(f"{name}: {_describe_failure(exc, settings)}")
                     get_metrics().federated_peer_errors.labels(peer=name).inc()
                     continue
                 urls = [

@@ -56,7 +56,7 @@ SearchOS builds a production-grade, fully self-hosted search API from open-sourc
 - **Own search index** — Postgres FTS (`ts_rank_cd`, english config) + pgvector HNSW embeddings, fused with Reciprocal Rank Fusion.
 - **Cross-encoder reranking** — candidates are rescored by a real relevance model (`cross-encoder/ms-marco-MiniLM-L6-v2`), so good and bad matches no longer return near-identical scores. Results below a threshold are dropped and weak result sets are flagged `low_confidence`.
 - **Image and multimodal search** — CLIP embeds images and text into one vector space, so `/v1/images/search` finds images by *what they depict* from a text query, or finds images like another image. Images are discovered while crawling; icons, SVGs and undersized assets are filtered out.
-- **Late-interaction ranking (ColBERT)** — optional, token-level MaxSim scoring blended with the cross-encoder. A single pooled vector per chunk can only express "how similar are the centroids"; MaxSim asks how much of the query is covered at token level. Off by default because it costs ~128KB per chunk.
+- **Late-interaction ranking (ColBERT)** — optional, token-level MaxSim scoring blended with the cross-encoder. A single pooled vector per chunk can only express "how similar are the centroids"; MaxSim asks how much of the query is covered at token level. **Off by default, and measured as a regression on this corpus** — see *Late interaction* below.
 - **Federated search** — query several SearchOS instances at once and merge with RRF, so a URL several independent indexes return scores higher than one only a single index found. Dead peers are skipped with a cooldown instead of adding their timeout to every query.
 - **Web fallback cascade** — SearXNG is primary; when it fails, is rate-limited, or returns an empty SERP, the request falls through to **Tavily** (free, no account needed), **Exa** (via its hosted MCP server), then **Jina**. The first tier that answers wins, and an exhausted chain opens a cooldown so a request never pays every dead upstream's timeout.
 - **Live web fallback that learns** — when local coverage is thin, SearXNG results are merged in, **saved into your index, and re-crawled**, so repeat queries are served instantly without re-hitting the web.
@@ -71,7 +71,7 @@ SearchOS builds a production-grade, fully self-hosted search API from open-sourc
 - **LLM-ready extraction** — clean markdown/text/json from HTML, PDF, and JS-rendered pages (headless renderer), robots.txt-aware, with an SSRF guard that resolves each host before connecting.
 - **MCP server** — expose search, extract, ingest, stats and health to any AI agent over **stdio, legacy HTTP+SSE, and the new stateless Streamable HTTP** (2026-07-28 spec). The HTTP transport is bearer-token protected; stdio is a local process.
 - **Production ops** — Redis cache + rate limits, auth (hashed API keys), Prometheus/Grafana metrics, Alembic migrations, and network segmentation so data services have no route off the host.
-- **Reproducible evaluation** — `tools/eval_retrieval.py` scores the index against a judged query set with nDCG@10, MRR@10, recall@50 and an abstention check, so retrieval changes can be measured rather than argued about.
+- **Reproducible evaluation** — `tools/eval_retrieval.py` scores the index against a judged query set with nDCG@10, MRR@10, recall@50 and an abstention check, so retrieval changes can be measured rather than argued about. It has already earned its place: it is what showed that late-interaction reranking was *hurting* this corpus, which two rounds of manual spot-checking had missed.
 
 ## Quick start
 
@@ -159,9 +159,9 @@ docker compose --profile mcp up -d
 curl -s localhost:8099/healthz   # {"status":"ok","service":"searchos-mcp"}
 ```
 
-`/mcp`, `/sse` and `/messages/` expose all nine tools including `ingest`, so the HTTP transports require `MCP_HTTP_TOKEN`. The server refuses to bind a non-loopback address without one. stdio is unaffected — it is a local process, not a socket.
+`/mcp`, `/sse` and `/messages/` expose all ten tools including `ingest`, so the HTTP transports require `MCP_HTTP_TOKEN`. The server refuses to bind a non-loopback address without one. stdio is unaffected — it is a local process, not a socket.
 
-Tools: `search`, `extract`, `ingest`, `stats`, `health`, `search_images`, `suggest`, `popular`, `recent`.
+Tools: `search`, `extract`, `ingest`, `stats`, `health`, `search_images`, `suggest`, `popular`, `recent`, `cache_flush`.
 
 **Claude Code** speaks Streamable HTTP natively:
 
@@ -266,7 +266,21 @@ So tokens are projected to 128 dimensions using ColBERT's own trained head (tran
 
 MaxSim runs **after** the cross-encoder, blended into the score, and the sort uses the blended value — so `score` always decreases with `rank`. Reordering without rescoring left the top result carrying the *lowest* score, which breaks any caller filtering on `score`.
 
-`COLBERT_WEIGHT=30` is calibrated, not guessed: MaxSim lands around 0.06–0.09 (it is divided by query token count) while cross-encoder logits are 3–6, so at the original weight of 2 the ColBERT term moved a score by ~0.16 and never changed a single ordering.
+`COLBERT_WEIGHT=30` was calibrated from score distributions — MaxSim lands around 0.06–0.09 (it is divided by query token count) while cross-encoder logits are 3–6, so the original weight of 2 moved a score by ~0.16 and never changed a single ordering.
+
+**That calibration was necessary but not sufficient.** Measured with `tools/eval_retrieval.py` against the judged query set:
+
+| Configuration | nDCG@10 | MRR@10 | Recall@50 | p50 |
+|---|---|---|---|---|
+| **ColBERT off** | **0.6331** | **0.3264** | 0.6944 | 257 ms |
+| ColBERT, weight 5 | 0.6235 | 0.3264 | 0.6944 | — |
+| ColBERT, weight 30 | 0.5760 | 0.2708 | 0.6944 | 755 ms |
+
+**ColBERT currently makes retrieval worse at every weight tried**, and costs about 3× the p50 latency. It stays off by default.
+
+This corrects an earlier claim in this repo: the feature was described as verified on the strength of one query's scores changing. Scores changing is not quality improving — that needed the benchmark, which is exactly what the harness exists to answer. Recall is unchanged, so MaxSim is reordering results without finding anything the first stage had missed.
+
+Whether a different blend (MaxSim as a tie-breaker rather than an additive term, or reranking only the top few) helps is untested.
 
 ### Federated search
 

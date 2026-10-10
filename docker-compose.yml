@@ -188,6 +188,8 @@ services:
       # overhead for queries that the cross-encoder already ranks well.
       COLBERT_ENABLED: ${COLBERT_ENABLED:-0}
       COLBERT_TOP_N: ${COLBERT_TOP_N:-50}
+      COLBERT_WEIGHT: ${COLBERT_WEIGHT:-30}
+      COLBERT_MODEL: ${COLBERT_MODEL:-colbert-ir/colbertv2.0}
       BOOTSTRAP_ADMIN_API_KEY: ${BOOTSTRAP_ADMIN_API_KEY:?set BOOTSTRAP_ADMIN_API_KEY in .env}
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
