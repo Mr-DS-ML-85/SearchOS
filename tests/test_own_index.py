@@ -190,3 +190,90 @@ def _session_factory():
     from app.db import get_session_factory
 
     return get_session_factory()
+
+
+class TestCascadeHonoursRetryAfter:
+    """A 429 is a rate limit, not an outage.
+
+    Tavily's keyless tier works and is the default; it is capped per IP per hour
+    and answers with `hourly_cap_reached` plus a Retry-After. Treating that as a
+    generic failure either hammers a tier that asked us to wait, or mutes a
+    healthy service for longer than it asked.
+    """
+
+    def test_cooldown_uses_retry_after_when_given(self):
+        from app.search.providers.cascade import CascadeProvider
+
+        cascade = CascadeProvider([], cooldown_seconds=30.0)
+        cascade._open_cooldown(retry_after=54.0)
+        remaining = cascade._cooldown_until - __import__("time").monotonic()
+        assert remaining >= 53.0, "a Retry-After longer than the default must win"
+
+    def test_cooldown_falls_back_to_default(self):
+        from app.search.providers.cascade import CascadeProvider
+
+        cascade = CascadeProvider([], cooldown_seconds=30.0)
+        cascade._open_cooldown(retry_after=None)
+        remaining = cascade._cooldown_until - __import__("time").monotonic()
+        assert 28.0 <= remaining <= 31.0
+
+    def test_provider_result_can_carry_retry_after(self):
+        from app.search.base import ProviderResult
+
+        result = ProviderResult(provider="tavily", query="q", retry_after=54.0)
+        assert result.retry_after == 54.0
+
+
+class TestTavilyKeylessLimitEnvelope:
+    """Keyless 429s carry a structured envelope, not just an HTTP header.
+
+    Tavily documents keyless as a supported free mode — `X-Tavily-Access-Mode:
+    keyless`, /search and /extract, identical response schema — that is fair-use
+    capped per IP. The cap response is
+    ``{"error": {code, message, window, retry_after_seconds, next_actions}}``;
+    the authoritative wait lives in the body. A *keyed* 429 is
+    ``{"detail": {...}}`` plus an HTTP ``Retry-After`` header. Both shapes occur,
+    and neither means the integration is misconfigured.
+    """
+
+    @staticmethod
+    def _response(payload: dict, headers: dict | None = None):
+        import httpx
+
+        return httpx.Response(429, json=payload, headers=headers or {})
+
+    def test_keyless_envelope_is_parsed_from_the_body(self):
+        from app.search.providers.tavily import parse_limit_response
+
+        response = self._response(
+            {
+                "error": {
+                    "code": "hourly_cap_reached",
+                    "window": "hour",
+                    "retry_after_seconds": 54,
+                    "next_actions": [{"type": "agentic_payment", "instruction": "Pay to continue"}],
+                }
+            }
+        )
+        code, window, actions, retry_after = parse_limit_response(response)
+        assert code == "hourly_cap_reached"
+        assert window == "hour"
+        # The body's value is authoritative; there is no header here.
+        assert retry_after == 54
+        assert actions and actions[0]["instruction"] == "Pay to continue"
+
+    def test_keyed_envelope_falls_back_to_the_retry_after_header(self):
+        from app.search.providers.tavily import parse_limit_response
+
+        response = self._response({"detail": {"error": "excessive requests"}}, headers={"Retry-After": "60"})
+        code, _window, _actions, retry_after = parse_limit_response(response)
+        assert code == ""
+        assert retry_after == 60
+
+    def test_unparseable_body_does_not_raise(self):
+        import httpx
+        from app.search.providers.tavily import parse_limit_response
+
+        response = httpx.Response(429, text="<html>gateway error</html>")
+        code, window, actions, retry_after = parse_limit_response(response)
+        assert (code, window, actions, retry_after) == ("", "", [], None)

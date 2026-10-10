@@ -243,7 +243,7 @@ If the cross-encoder cannot load, the heuristic reranker is used instead and **t
 | Tier | Credential needed | Notes |
 |---|---|---|
 | SearXNG | — | primary |
-| Tavily | **none** | `X-Tavily-Access-Mode: keyless`, identical response schema |
+| Tavily | **none** | documented keyless mode: `X-Tavily-Access-Mode: keyless`, identical response schema; fair-use capped per IP |
 | Exa | **none** | hosted MCP at `mcp.exa.ai`; its REST API returns 402 without a funded key |
 | Jina | key | `s.jina.ai` returns 401 without one |
 

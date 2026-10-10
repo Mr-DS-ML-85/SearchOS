@@ -32,9 +32,23 @@ fire" is a measurement rather than a mystery: you can see whether the nearest
 candidate was 0.87 against a 0.92 threshold (a genuine near-miss) or 0.54 (a
 different question entirely).
 
-When every provider fails, the error names the reason as well as the provider —
-`tavily: HTTP 429 rate limited (keyless tier — set TAVILY_API_KEY for a
-dedicated quota)` rather than a bare "All search providers failed".
+When every provider fails, the error names the reason as well as the provider.
+
+Tavily's keyless mode is a documented, supported tier: send
+`X-Tavily-Access-Mode: keyless`, get free access to `/search` and `/extract`,
+with an identical response schema. It is fair-use capped per IP, so a 429 from
+it is capacity, not a misconfiguration — and the error says so:
+
+    tavily: HTTP 429 rate limited (hourly_cap_reached) window=hour
+    keyless tier — set TAVILY_API_KEY for a dedicated quota (free, 1000 credits/month)
+    ; retry after 54s
+
+Tavily uses two different 429 envelopes. Keyless puts `code`, `window`,
+`retry_after_seconds` and `next_actions` in the response **body**; keyed uses
+`{"detail": ...}` plus an HTTP `Retry-After` header. Both are parsed. The
+cascade cooldown honours the longest `Retry-After` any tier asked for, so a
+rate-limited tier is muted for exactly as long as it requested rather than a
+fixed guess.
 
 `colbert` forces late-interaction reranking on or off for a single query,
 overriding the server default, so the reranker can be A/B'd from a client. It is

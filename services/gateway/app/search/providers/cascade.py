@@ -43,12 +43,22 @@ class CascadeProvider(SearchProvider):
     def in_cooldown(self) -> bool:
         return time.monotonic() < self._cooldown_until
 
-    def _open_cooldown(self) -> None:
-        self._cooldown_until = time.monotonic() + self.cooldown_seconds
-        logger.warning(
-            "all web providers failed; cooling down for %ds before retrying the chain",
-            self.cooldown_seconds,
-        )
+    def _open_cooldown(self, retry_after: float | None = None) -> None:
+        """Pause the chain.
+
+        ``retry_after`` is what an upstream asked for via Retry-After on a 429.
+        A rate limit is not an outage: the service is healthy and will answer
+        again shortly, so pausing for its own stated window beats the generic
+        cooldown, which would mute a working tier for longer than necessary —
+        and shorter than necessary would hammer a tier that just said "wait".
+        """
+        seconds = self.cooldown_seconds
+        reason = "all web providers failed"
+        if retry_after:
+            seconds = max(seconds, float(retry_after))
+            reason = "web providers rate limited"
+        self._cooldown_until = time.monotonic() + seconds
+        logger.warning("%s; cooling down for %ds before retrying the chain", reason, seconds)
 
     @staticmethod
     def _enforce_domains(query: ProviderQuery, results: list) -> list:
@@ -99,6 +109,9 @@ class CascadeProvider(SearchProvider):
             combined = ProviderResult(provider=self.name, query=query.q)
             attempted: list[str] = []
             failures: list[str] = []
+            # Retry-After asked for by any tier in this attempt, so the cooldown
+            # can honour the upstream's own window rather than a fixed guess.
+            retry_waits: list[float] = []
 
             for tier in self.tiers:
                 attempted.append(tier.name)
@@ -115,6 +128,8 @@ class CascadeProvider(SearchProvider):
                     continue
 
                 results = self._enforce_domains(query, outcome.results)
+                if outcome.retry_after:
+                    retry_waits.append(outcome.retry_after)
                 if not results:
                     # Either nothing matched, or the domain filter removed
                     # everything. Treat as a miss and keep descending.
@@ -147,7 +162,8 @@ class CascadeProvider(SearchProvider):
             combined.error = "web cascade exhausted: " + " | ".join(failures[:4])
             combined.raw = {"attempted": attempted, "degraded_tiers": failures}
             combined.latency_ms = (time.monotonic() - start) * 1000
-            self._open_cooldown()
+            # Respect the longest Retry-After any tier asked for.
+            self._open_cooldown(max(retry_waits) if retry_waits else None)
             return combined
 
 

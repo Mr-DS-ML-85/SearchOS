@@ -27,6 +27,10 @@ class ProviderResult:
     results: list[SearchResult] = field(default_factory=list)
     error: str | None = None
     latency_ms: float = 0.0
+    #: Seconds the upstream asked us to wait, parsed from Retry-After on a 429.
+    #: Distinct from an outage: a rate limit is not a broken provider, and
+    #: pausing for its own stated window beats the generic cascade cooldown.
+    retry_after: float | None = None
     raw: dict[str, Any] | None = None
 
 
