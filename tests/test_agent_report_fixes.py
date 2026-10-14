@@ -553,3 +553,35 @@ class TestSearxngDomains:
         assert sent[0]["q"] == "transformer attention site:arxiv.org -site:export.arxiv.org"
         assert [r.url for r in out.results] == ["https://arxiv.org/abs/1706.03762"]
         assert out.results[0].rank == 1
+
+
+class TestDatabaseUnreachable:
+    def test_dns_failure_on_ops_endpoint_is_a_clean_503(self, monkeypatch):
+        """A postgres DNS failure turned every /metrics scrape into a 500 + traceback."""
+        import socket
+
+        from app import db
+        from app.config import get_settings
+        from app.main import create_app
+        from fastapi.testclient import TestClient
+
+        s = get_settings()
+        monkeypatch.setattr(s, "auth_enabled", True)
+        monkeypatch.setattr(s, "rate_limit_health_endpoints", True)
+
+        class Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *e):
+                return False
+
+            async def scalar(self, *a, **k):
+                raise socket.gaierror(-2, "Name or service not known")
+
+        monkeypatch.setattr(db, "get_session_factory", lambda: Session)
+        client = TestClient(create_app(), raise_server_exceptions=False)  # no lifespan: no real DB needed
+        resp = client.get("/metrics", headers={"Authorization": "Bearer sk_test"})
+        assert resp.status_code == 503
+        assert resp.json()["code"] == "database_unavailable"
+        assert resp.headers["retry-after"] == "5"

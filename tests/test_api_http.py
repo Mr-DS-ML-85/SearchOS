@@ -80,12 +80,15 @@ class TestHealthAndOps:
         import pytest as _pytest
 
         try:
-            body = client.get("/stats").json()
+            resp = client.get("/stats")
         except Exception as exc:  # pragma: no cover - depends on environment
             if isinstance(exc, (OSError, ConnectionError)) or "connect" in str(exc).lower():
                 _pytest.skip(f"no database available: {exc}")
             raise
-        assert body["uptime_seconds"] > 0
+        # An unreachable database is now the documented 503, not an exception.
+        if resp.status_code == 503 and resp.json().get("code") == "database_unavailable":
+            _pytest.skip("no database available")
+        assert resp.json()["uptime_seconds"] > 0
 
 
 class TestSearchValidation:

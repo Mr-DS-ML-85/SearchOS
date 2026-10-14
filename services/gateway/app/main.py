@@ -367,6 +367,30 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.exception_handler(OSError)
+    async def connection_exception_handler(request: Request, exc: OSError):
+        # asyncpg raises raw OSErrors while connecting (socket.gaierror when the
+        # postgres hostname does not resolve, ConnectionRefusedError while it is
+        # restarting) and SQLAlchemy does not wrap them, so they skipped the
+        # handler above. They reached the catch-all instead, which re-raises:
+        # every Prometheus scrape of /metrics during a brief database outage
+        # became a 500 plus a ~200-line traceback. Other outbound clients
+        # (httpx, redis) wrap their own errors, so a raw OSError here means the
+        # database is unreachable. One line, not a traceback; it is expected
+        # while postgres restarts.
+        get_logger("app").warning(
+            "database unreachable on %s %s: %s: %s", request.method, request.url.path, exc.__class__.__name__, exc
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "code": "database_unavailable",
+                "message": "The database is unreachable; retry shortly.",
+                "details": None,
+            },
+            headers={"Retry-After": "5"},
+        )
+
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         logger = get_logger("app")
