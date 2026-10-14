@@ -56,6 +56,7 @@ SearchOS builds a production-grade, fully self-hosted search API from open-sourc
 - **Own search index** — Postgres FTS (`ts_rank_cd`, english config) + pgvector HNSW embeddings, fused with Reciprocal Rank Fusion.
 - **Cross-encoder reranking** — candidates are rescored by a real relevance model (`cross-encoder/ms-marco-MiniLM-L6-v2`), so good and bad matches no longer return near-identical scores. Results below a threshold are dropped and weak result sets are flagged `low_confidence`.
 - **Image and multimodal search** — CLIP embeds images and text into one vector space, so `/v1/images/search` finds images by *what they depict* from a text query, or finds images like another image. Images are discovered while crawling; icons, SVGs and undersized assets are filtered out. Text queries apply a measured similarity floor, so a query nothing depicts returns no images instead of the nearest unrelated ones. `source=google` searches Google Images instead (with Proxify).
+- **Topic search** — `?topic=news|videos|science|music|it|files|social` restricts a query to one content category, so a client can offer tabs without reimplementing category logic. Backed by SearXNG's own category set, and `GET /v1/topics` reports what *this* instance can actually fill — an unknown or unserved category is a validation error, never a silent fallback to general results.
 - **Late-interaction ranking (ColBERT)** — optional, token-level MaxSim scoring blended with the cross-encoder. A single pooled vector per chunk can only express "how similar are the centroids"; MaxSim asks how much of the query is covered at token level. **Off by default, and measured as a regression on this corpus** — see *Late interaction* below.
 - **Federated search** — query several SearchOS instances at once and merge with RRF, so a URL several independent indexes return scores higher than one only a single index found. Dead peers are skipped with a cooldown instead of adding their timeout to every query.
 - **Web fallback cascade** — SearXNG is primary; when it fails, is rate-limited, or returns an empty SERP, the request falls through to **Google** (when Proxify is configured), **Tavily** (free, no account needed), **Exa** (via its hosted MCP server), then **Jina**. The first tier that answers wins, and an exhausted chain opens a cooldown so a request never pays every dead upstream's timeout.
@@ -166,9 +167,9 @@ docker compose --profile mcp up -d
 curl -s localhost:8099/healthz   # {"status":"ok","service":"searchos-mcp"}
 ```
 
-`/mcp`, `/sse` and `/messages/` expose all ten tools including `ingest`, so the HTTP transports require `MCP_HTTP_TOKEN`. The server refuses to bind a non-loopback address without one. stdio is unaffected — it is a local process, not a socket.
+`/mcp`, `/sse` and `/messages/` expose all eleven tools including `ingest`, so the HTTP transports require `MCP_HTTP_TOKEN`. The server refuses to bind a non-loopback address without one. stdio is unaffected — it is a local process, not a socket.
 
-Tools: `search`, `extract`, `ingest`, `stats`, `health`, `search_images`, `suggest`, `popular`, `recent`, `cache_flush`.
+Tools: `search`, `extract`, `ingest`, `stats`, `health`, `search_images`, `topics`, `suggest`, `popular`, `recent`, `cache_flush`.
 
 **Claude Code** speaks Streamable HTTP natively:
 
@@ -334,6 +335,7 @@ Full reference in [docs/api.md](docs/api.md).
 |---|---|---|---|
 | `q` | string | — | search query (required) |
 | `sources` | `all`\|`local`\|`vector`\|`web`\|`searxng`\|`google`\|`tavily`\|`exa`\|`jina`\|`federated`\|`federated_web` | `all` | which providers to query; `web` is the whole cascade, the others pin one upstream |
+| `topic` | string | — | restrict to one content category; see [`GET /v1/topics`](docs/api.md#get-v1topics) for the ids and which are available |
 | `num_results` | int 1–50 | 10 | results to return |
 | `language` | ISO 639-1, e.g. `en`, `fr` | — | indexed results limited to documents detected as that language; sent to web tiers as a locale |
 | `country` | ISO 3166, e.g. `ca` | — | combined with `language` into a web locale (`fr-CA`); no effect on indexed results, which carry no country |

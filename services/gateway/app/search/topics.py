@@ -122,8 +122,13 @@ TOPICS: dict[str, Topic] = {
             "news",
             ("searxng",),
             True,
-            "Local SearXNG returned 2 results where videos returned 86. Tavily "
-            "supports topic=news but needs a key under keyless access (503).",
+            # No counts in this note on purpose: it is a permanent string and
+            # per-category counts move with the query and the reranker. It says
+            # the two things a caller cannot infer — that the category is thin on
+            # this instance, and why Tavily is not standing in for it.
+            "Thin category on this instance: its upstream engines return far fewer "
+            "rows than videos or images. Tavily supports topic=news but needs a "
+            "key; keyless access returns 503.",
         ),
         Topic(
             "map",

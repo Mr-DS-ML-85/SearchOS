@@ -136,6 +136,7 @@ the same query.
 |---|---|---|---|
 | `q` | string | — | search query (required) |
 | `sources` | `all` \| `local` \| `vector` \| `web` \| `searxng` \| `google` \| `tavily` \| `exa` \| `jina` \| `federated` \| `federated_web` | `all` | providers to query. `web` is the whole fallback cascade; a tier name pins one upstream and errors instead of falling back. `google` exists only when `PROXIFY_URL` is set |
+| `topic` | see [`GET /v1/topics`](#get-v1topics) | — | restrict to one content category. Orthogonal to `sources`: that picks the provider, this picks the category it searches. See [Topics](#topics) |
 | `num_results` | int 1–50 | 10 | results to return |
 | `language` | ISO 639-1, e.g. `en`, `fr`, `fr-CA` | — | indexed results are restricted to documents detected as that language; web tiers receive it as a locale. Documents whose language could not be detected are excluded, and an unknown code matches nothing |
 | `country` | ISO 3166, e.g. `ca` | — | combined with `language` into a web locale (`fr` + `ca` → `fr-CA`) and sent to Google as `gl`. Indexed documents carry no country, so it has no effect on local/vector results |
@@ -240,6 +241,97 @@ Behavioral notes:
   had nothing. See [searxng.md](searxng.md).
 - `cache=false` bypasses the Redis cache — use when testing the live pipeline.
 - When `providers` includes `web` but all results are `local`, SearXNG was skipped (local coverage sufficient).
+
+## `GET /v1/topics`
+
+The topic catalogue: the content categories this instance can search. Build tabs
+from it rather than hardcoding a list, which drifts the first time a category is
+added or an instance is configured differently.
+
+```json
+{
+  "topics": [
+    { "id": "news", "label": "News", "sources": ["searxng"], "available": true,
+      "note": "Thin category on this instance: its upstream engines return far fewer rows than videos or images. Tavily supports topic=news but needs a key; keyless access returns 503." },
+    { "id": "map", "label": "Maps", "sources": [], "available": false,
+      "note": "No provider here serves maps. The documented SearXNG category returns 0 on this instance, and 'maps' is silently treated as general." }
+  ],
+  "supported": ["general", "images", "videos", "news", "music", "it", "science", "files", "social"]
+}
+```
+
+`available: false` means this instance has no engines for the category — check
+it before rendering a tab, so a category that cannot be filled is disabled
+rather than shown permanently empty. `note` says why.
+
+## Topics
+
+`?topic=<id>` restricts a search to one category:
+
+```
+GET /v1/search?q=nvidia earnings report&topic=news        -> barrons.com
+GET /v1/search?q=tokio runtime tutorial&topic=videos      -> youtube.com
+GET /v1/search?q=paxos&topic=science                      -> ieee.org, dblp.org, arxiv.org
+GET /v1/search?q=rust lifetime elision&topic=it           -> github.com
+```
+
+`topic` is **not** a `sources` value. `sources` names a provider; `topic`
+constrains which category that provider searches. The two are independent, and a
+topic overrides the provider list — `?topic=news&sources=all` searches the news
+category rather than the general web under a News tab.
+
+### Measured category coverage
+
+One query (`q=paxos consensus`, `num_results=50`) per category, through
+`/v1/search`. Two columns, because they answer different questions and quoting
+one as the other is misleading:
+
+| Topic | Rows returned | Upstream rows | Topic | Rows returned | Upstream rows |
+|---|---|---|---|---|---|
+| `videos` | 13 | 105 | `science` | 23 | 62 |
+| `images` | 9 | 78 | `general` | 19 | 20 |
+| `music` | 7 | 32 | `social` | 1 | 8 |
+| `it` | 4 | 60 | `files` | 0 | 10 |
+| `news` | 1 | 2 | `map` | — | 0 |
+
+"Upstream rows" is what the SearXNG category returns; "rows returned" is what
+survives the candidate cap, reranking and `min_score`. `it` shows the gap
+worst — 60 upstream rows become 4, because a cross-encoder relevance logit
+correctly judges that most Stack Overflow threads do not answer a
+distributed-systems question. A SearXNG instance also only has engines for the
+categories it was configured with, so a topic can be valid and still return
+nothing.
+
+Both columns vary by query. These are single measurements, not guarantees, and
+the catalogue's `available` flag reports whether a category has engines here at
+all — not how many results a given query will match.
+
+### An unknown category fails loudly, on purpose
+
+SearXNG **ignores a category it does not recognise** rather than rejecting it.
+Requesting `categories=maps` returned 27 results, byte-identical to `general` —
+the value was dropped and the default used. A maps tab wired that way would
+have looked permanently healthy and been wrong on every query.
+
+So the catalogue refuses names it cannot serve:
+
+```
+topic=maps   -> validation_error: unknown topic 'maps' — see GET /v1/topics
+topic=map    -> validation_error: topic 'map' has no provider here: ...
+topic=nope   -> validation_error: unknown topic 'nope' — see GET /v1/topics
+```
+
+`map` is the spelling the SearXNG docs use; it returns 0 on this instance
+because no engines are configured for it. Maps is therefore declared
+unservable rather than silently answered with general results.
+
+### Cache behaviour
+
+`topic` is part of both cache identities. Without it, an untopiced query read the
+News page back out of cache — a News tab and a General tab returning identical
+results. Verified: after `?topic=news` populates the cache, the same query
+without `topic` is a miss and returns a different page, while `?topic=news`
+again is an `exact` hit.
 
 ## `POST /v1/extract`
 

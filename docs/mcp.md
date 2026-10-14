@@ -6,7 +6,8 @@
 
 | Tool | Calls | Description |
 |---|---|---|
-| `search` | `GET /v1/search` | full search pipeline (FTS + vector + web fallback); `sources="google"` pins Google via Proxify |
+| `search` | `GET /v1/search` | full search pipeline (FTS + vector + web fallback); `sources="google"` pins Google via Proxify; `topic` restricts to one content category |
+| `topics` | `GET /v1/topics` | the topic catalogue — valid `topic` ids, the providers behind each, and `available` so an agent can skip a category this instance cannot fill |
 | `extract` | `POST /v1/extract` | fetch + clean a page (markdown/text/json); falls back to Proxify when configured, reported as `fetched_via` |
 | `ingest` | `POST /v1/admin/ingest` | seed a URL or sitemap (needs admin key) |
 | `stats` | `GET /stats` | index + queue + uptime stats |
@@ -40,6 +41,13 @@ Every gateway route is either an MCP tool or deliberately excluded (the table
 above), and every query or body parameter of a wrapped route is accepted by its
 tool. `freshness` is the one omission: it is an alias of `time_range`, which the
 tool takes. Auth headers come from the server's configured keys.
+
+`topic` is worth calling out because it was briefly implemented as a `sources`
+value and that was wrong twice over: it broke the parity check below, and
+`sources` means *provider* while a topic constrains the category that provider
+searches. It is a separate field on `search`, and `topics` exists so an agent
+discovers valid ids instead of guessing — an id that is not in the catalogue is
+a `validation_error`, not a silent fallback to general results.
 
 The `search` tool passes the gateway's response through unchanged, results
 included, so an MCP caller sees exactly the fields an API caller does
