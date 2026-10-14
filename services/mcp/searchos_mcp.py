@@ -131,6 +131,14 @@ def _search_schema() -> dict[str, Any]:
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "search query (required)"},
+            "topic": {
+                "type": "string",
+                "maxLength": 40,
+                "description": (
+                    "Search one content category instead of the general web. Use the "
+                    "`topics` tool to list valid ids. Omit for an ordinary search."
+                ),
+            },
             "sources": {
                 "type": "string",
                 # Must track the gateway's SearchSource enum. This list was stale
@@ -355,6 +363,16 @@ def _tools() -> list[types.Tool]:
             input_schema=_suggest_schema(),
         ),
         types.Tool(
+            name="topics",
+            description=(
+                "The topic catalogue: search categories (news, videos, science, ...) this "
+                "instance can serve. Each entry reports `available` and the providers that "
+                "back it, so a caller can skip a category this instance cannot fill instead "
+                "of rendering an empty tab. Pass an entry's `id` as `topic` to `search`."
+            ),
+            input_schema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
             name="popular",
             description=(
                 "Most-run queries, from the live Redis query counter. Corpus-wide, not scoped to the calling key."
@@ -444,6 +462,10 @@ async def handle_search(ctx: ServerRequestContext, params: types.CallToolRequest
             params={
                 "q": query,
                 "sources": args.get("sources", "all"),
+                # Orthogonal to `sources`: the provider to query vs the content
+                # category it queries. Omitted when absent so an untopiced search
+                # is byte-identical to one sent before topics existed.
+                "topic": args.get("topic") or None,
                 "num_results": num_results,
                 "language": args.get("language"),
                 "country": args.get("country"),
@@ -620,6 +642,14 @@ async def handle_suggest(ctx: ServerRequestContext, params: types.CallToolReques
     )
 
 
+async def handle_topics(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
+    try:
+        body = await gateway_call("GET", "/v1/topics")
+    except GatewayError as e:
+        return text_result(str(e), is_error=True)
+    return text_result(json.dumps(body, indent=2, ensure_ascii=False))
+
+
 async def handle_popular(ctx: ServerRequestContext, params: types.CallToolRequestParams) -> types.CallToolResult:
     args = params.arguments or {}
     try:
@@ -696,6 +726,7 @@ async def _call_tool(ctx: ServerRequestContext, params: types.CallToolRequestPar
         "health": handle_health,
         "search_images": handle_search_images,
         "suggest": handle_suggest,
+        "topics": handle_topics,
         "popular": handle_popular,
         "recent": handle_recent,
         "cache_flush": handle_cache_flush,

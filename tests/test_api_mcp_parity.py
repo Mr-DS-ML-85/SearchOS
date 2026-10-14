@@ -21,6 +21,7 @@ TOOL_ROUTES = {
     "search": "GET /v1/search",
     "search_images": "GET /v1/images/search",
     "extract": "POST /v1/extract",
+    "topics": "GET /v1/topics",
     "suggest": "GET /v1/suggest",
     "popular": "GET /v1/popular",
     "recent": "GET /v1/recent",

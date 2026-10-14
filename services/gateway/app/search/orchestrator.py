@@ -19,6 +19,8 @@ from app.search.operators import parse as parse_query
 from app.search.rerank import Reranker, get_cross_encoder
 from app.search.semantic_cache import SemanticCache
 from app.search.simhash import near_duplicate, to_signed
+from app.search.topics import resolve as resolve_topic
+from app.search.topics import topic_for_searxng
 from app.search.web_persist import WEB_PROVIDERS, persist_web_results
 
 logger = get_logger("search")
@@ -139,9 +141,21 @@ class SearchOrchestrator:
                 cross_encoder=(get_cross_encoder() if self.settings.rerank_model else None),
             )
 
-    def select_providers(self, sources: str, *, federated_hop: bool = False) -> list[SearchProvider]:
+    def select_providers(
+        self, sources: str, *, federated_hop: bool = False, topic: str | None = None
+    ) -> list[SearchProvider]:
         # A request forwarded by a peer must not be federated again.
         excluded = {"federated", "federated_web"} if federated_hop else set()
+        # A topic is a content category, not a provider name, so it resolves to
+        # the providers that can serve that category. Checked before `sources`
+        # because a topic is the more specific constraint, and because letting
+        # `sources` win would let ?topic=news&sources=all quietly answer with
+        # general results under a News tab.
+        if topic:
+            resolved = resolve_topic(topic)
+            if resolved and resolved.providers:
+                selected = [self.providers.get(name) for name in resolved.providers]
+                return [p for p in selected if p is not None and p.name not in excluded]
         if sources == "all":
             # Everything except the tiers the `web` cascade already queries.
             # Including them would double every live-web request.
@@ -177,6 +191,10 @@ class SearchOrchestrator:
         # with domains=[docs.rs] could be served an unfiltered neighbour's page.
         filter_identity = [
             req.sources,
+            # Without this, ?topic=news and the same query untopiced share a cache
+            # entry, so the second request to arrive is answered with the first
+            # one's category — a News tab showing general results.
+            req.topic or "",
             sorted(domains),
             sorted(exclude_domains),
             colbert_on,
@@ -211,6 +229,11 @@ class SearchOrchestrator:
             "search",
             query_text.lower().strip(),
             req.sources,
+            # Not optional. `sources` alone does not separate a News search from
+            # the same query untopiced, so the untopiced request was served the
+            # News page from cache — a News tab and a General tab showing
+            # byte-identical results, which is the defect topics exist to avoid.
+            f"topic={req.topic or ''}",
             # The stored value is one page, so the key must name the page. Keyed
             # on `window` alone, offset=5&n=5 and offset=0&n=10 collided and the
             # second caller received ranks 1-10 instead of 6-10.
@@ -328,7 +351,7 @@ class SearchOrchestrator:
                 )
 
             metrics.cache_misses.inc()
-        providers = self.select_providers(req.sources, federated_hop=federated_hop)
+        providers = self.select_providers(req.sources, federated_hop=federated_hop, topic=req.topic)
         if not providers:
             from app.errors import ProviderError
 
@@ -349,6 +372,10 @@ class SearchOrchestrator:
             offset=0,
             skip_when_local_hit=(req.sources == "all" and req.time_range == "all"),
             federated_hop=federated_hop,
+            # The upstream category. It is part of the cache identity below
+            # alongside req.sources, so two topics over the same text stay
+            # separate answers rather than one serving the other.
+            topic=topic_for_searxng(req.topic),
         )
 
         tasks = [provider.search(query) for provider in providers]

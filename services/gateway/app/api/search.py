@@ -94,6 +94,7 @@ async def search(
     # Set by a federated peer forwarding a query here. Such a request is not
     # federated again, so rate-limited peers cannot bounce it between them.
     x_searchos_federated_hop: Annotated[str | None, Header()] = None,
+    topic: Annotated[str | None, Query(max_length=40)] = None,
 ) -> SearchResponse:
     start = time.monotonic()
 
@@ -115,6 +116,21 @@ async def search(
 
     orchestrator = build_orchestrator()
 
+    # Topic routing. A topic is an orthogonal constraint, not a source: it narrows
+    # the request to the providers that serve that category and pins the upstream
+    # category, so ?topic=news is a genuinely different search rather than the
+    # default one with a label on it.
+    if topic:
+        from app.errors import ValidationError as _VE
+        from app.search import topics as _topics
+
+        _t = _topics.resolve(topic)
+        if _t is None:
+            raise _VE(f"unknown topic '{topic}' — see GET /v1/topics")
+        if not _t.providers:
+            raise _VE(f"topic '{_t.id}' has no provider here: {_t.note or 'none configured'}")
+        merged.topic = _t.id
+
     try:
         response = await orchestrator.search(merged, federated_hop=bool(x_searchos_federated_hop))
         background_tasks.add_task(
@@ -127,6 +143,18 @@ async def search(
         return response
     except AppError as e:
         raise e
+
+
+@router.get("/v1/topics")
+async def list_topics(api_key: Annotated[ApiKey, Depends(current_api_key)]) -> dict:
+    """The topic catalogue, for a GUI to build tabs from.
+
+    Returns `sources` and `available` per topic so the client can disable a tab
+    it cannot fill, instead of rendering one that always comes back empty.
+    """
+    from app.search import topics as _topics
+
+    return {"topics": _topics.catalogue(), "supported": _topics.supported_topics()}
 
 
 def _split_domains(values: list[str] | None) -> list[str] | None:

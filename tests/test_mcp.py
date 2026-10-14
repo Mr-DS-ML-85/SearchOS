@@ -102,6 +102,7 @@ class TestToolCatalogue:
             "stats",
             "health",
             "search_images",
+            "topics",
             "suggest",
             "popular",
             "recent",

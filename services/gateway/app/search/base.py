@@ -18,6 +18,10 @@ class ProviderQuery:
     num_results: int = 20
     offset: int = 0
     skip_when_local_hit: bool = False
+    #: SearXNG category to search, from `app.search.topics`. Per-request rather
+    #: than a provider attribute: a shared mutable field would let two concurrent
+    #: topics overwrite each other and answer with the wrong category.
+    topic: str | None = None
     #: Set when the request itself came from a federated peer. Such a request
     #: must not federate again, or two peers whose own web tiers are rate-
     #: limited would forward the query to each other forever.

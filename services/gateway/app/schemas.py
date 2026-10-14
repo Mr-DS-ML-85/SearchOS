@@ -14,6 +14,13 @@ SearchSource = Literal[
 class SearchRequest(BaseModel):
     q: str = Field(..., min_length=1, max_length=512, description="Search query")
     sources: SearchSource = "all"
+    #: A topic narrows this request to one content category — see
+    #: app/search/topics.py for the catalogue and GET /v1/topics. Kept out
+    #: of `sources` on purpose: sources name *providers*, and a topic is an
+    #: orthogonal constraint on which category those providers search.
+    topic: str | None = Field(
+        None, max_length=40, description="Topic id, e.g. news/videos/science"
+    )
     num_results: int = Field(10, ge=1, le=50)
     language: str | None = None
     country: str | None = None

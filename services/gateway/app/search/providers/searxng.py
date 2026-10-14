@@ -57,7 +57,12 @@ class SearXNGProvider(SearchProvider):
             "q": upstream_q,
             "format": "json",
             "safesearch": 0,
-            "categories": "general",
+            # Hardcoded "general" made every category unreachable. SearXNG
+            # *silently ignores* a category it does not recognise rather than
+            # rejecting it, so an unvalidated value here degrades to general
+            # results that look like a working answer. `app.search.topics`
+            # validates before it gets this far.
+            "categories": query.topic or "general",
         }
         # SearXNG takes a locale ("fr-CA"), which is the only place `country`
         # can mean anything: indexed documents carry no country signal. It was
