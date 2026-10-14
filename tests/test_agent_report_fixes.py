@@ -509,3 +509,47 @@ class TestFederationModes:
         assert fed.mode == "all" and fed.timeout == s.federated_web_timeout_seconds
         web = build_federated_web(s)
         assert web.name == "federated_web" and web.mode == "web"
+
+
+class TestSearxngDomains:
+    async def test_site_operator_reaches_searxng_and_results_are_filtered(self, monkeypatch):
+        """site:arxiv.org searched the whole web: pinned it returned other domains."""
+        import httpx
+        from app.search.providers.searxng import SearXNGProvider
+
+        sent: list[dict] = []
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "results": [
+                        {"url": "https://www.geeksforgeeks.org/x", "title": "g", "content": "c"},
+                        {"url": "https://arxiv.org/abs/1706.03762", "title": "a", "content": "c"},
+                        {"url": "https://export.arxiv.org/abs/2", "title": "b", "content": "c"},
+                    ]
+                }
+
+        class Client:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *e):
+                return False
+
+            async def get(self, url, params=None):
+                sent.append(params)
+                return Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", Client)
+        p = SearXNGProvider(None, "http://searxng", 5.0)
+        q = ProviderQuery(q="transformer attention", domains=["arxiv.org"], exclude_domains=["export.arxiv.org"])
+        out = await p.search(q)
+        assert sent[0]["q"] == "transformer attention site:arxiv.org -site:export.arxiv.org"
+        assert [r.url for r in out.results] == ["https://arxiv.org/abs/1706.03762"]
+        assert out.results[0].rank == 1

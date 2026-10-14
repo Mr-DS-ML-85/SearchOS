@@ -122,9 +122,13 @@ claude mcp add --scope user --transport http searchos \
   http://127.0.0.1:8099/mcp \
   --header "Authorization: Bearer $MCP_HTTP_TOKEN"
 
-# or stdio, which needs no token and no running container
-claude mcp add --scope user searchos -- \
-  /path/to/services/mcp/searchos_mcp.py --transport stdio
+# or stdio, which needs no MCP token and no MCP container. The gateway keys go
+# in -e; the script has no shebang, so run it with the venv's python.
+claude mcp add --scope user searchos \
+  -e SEARCHOS_URL=http://127.0.0.1:8000 \
+  -e SEARCHOS_API_KEY=sk_user_... \
+  -e SEARCHOS_ADMIN_KEY=sk_admin_... \
+  -- /path/to/.venv/bin/python /path/to/services/mcp/searchos_mcp.py --transport stdio
 
 claude mcp list        # shows "✔ Connected" once it can reach the server
 ```
@@ -166,8 +170,9 @@ The simplest configuration needs nothing but Python:
 }
 ```
 
-`SEARCHOS_ADMIN_KEY` is what enables the `ingest` tool; without it that one tool
-returns an explanatory error while the rest work.
+`SEARCHOS_ADMIN_KEY` is what enables `ingest` and `cache_flush`; without it
+those two tools return an explanatory error while the rest work. See
+[API keys](#api-keys).
 
 #### Reaching `/mcp` from Desktop
 
@@ -264,15 +269,56 @@ SDK 2.0's `Server` runs a dual-era loop, so one instance serves both handshake-e
 | Variable | Default | Purpose |
 |---|---|---|
 | `SEARCHOS_URL` | `http://127.0.0.1:8000` | gateway base URL |
-| `SEARCHOS_API_KEY` | — | user key for `search`/`extract`/`stats`/`health` |
-| `SEARCHOS_ADMIN_KEY` | — | admin key; only needed for `ingest` tool |
+| `SEARCHOS_API_KEY` | — | gateway key sent by every non-admin tool: `search`, `search_images`, `extract`, `suggest`, `popular`, `recent`, `stats`, `health` |
+| `SEARCHOS_ADMIN_KEY` | — | admin gateway key, used **only** by `ingest` and `cache_flush` |
 | `MCP_HOST` | `127.0.0.1` | bind address for the HTTP transports |
 | `MCP_PORT` | `8099` | port for the HTTP transports |
 | `MCP_HTTP_TOKEN` | — | bearer token required by `/mcp`, `/sse`, `/messages/` |
 | `MCP_STATELESS_HTTP` | `true` | run Streamable HTTP without sessions |
 | `GATEWAY_TIMEOUT` | `60` | seconds before a gateway call is abandoned |
 
-The `ingest` tool returns an explicit error if no admin key is set.
+`ingest` and `cache_flush` return an explicit error if no admin key is set; the
+other tools keep working.
+
+### API keys
+
+The MCP server holds two **gateway** keys and sends them on the agent's behalf;
+the agent never sees them.
+
+| Key | Env var | Role | Used by |
+|---|---|---|---|
+| user key | `SEARCHOS_API_KEY` | `user` | `search`, `search_images`, `extract`, `suggest`, `popular`, `recent`, `stats`, `health` |
+| admin key | `SEARCHOS_ADMIN_KEY` | `admin` | `ingest`, `cache_flush` |
+
+Mint a user key with the admin key (the raw key is returned once):
+
+```bash
+curl -s -X POST http://localhost:8000/v1/admin/keys \
+  -H "Authorization: Bearer $BOOTSTRAP_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"mcp-agent","role":"user"}'
+```
+
+Give the MCP server a **user** key for `SEARCHOS_API_KEY`, and set
+`SEARCHOS_ADMIN_KEY` only if agents should be able to crawl and flush the cache.
+Leaving it unset disables exactly those two tools.
+
+**Where the keys go depends on the transport:**
+
+- **stdio**: the client spawns the server, so the keys go in the client's
+  config: `-e` flags for `claude mcp add`, or the `env` block in
+  `claude_desktop_config.json` (both shown below).
+- **HTTP (`/mcp`, `/sse`)**: the keys live in the MCP **server's** environment.
+  The client sends only `Authorization: Bearer $MCP_HTTP_TOKEN`, which admits it
+  to the MCP server; it is not a gateway key.
+
+**Docker Compose default:** `docker-compose.yml` sets
+`SEARCHOS_API_KEY=${SEARCHOS_API_KEY:-${BOOTSTRAP_ADMIN_API_KEY}}` and
+`SEARCHOS_ADMIN_KEY=${BOOTSTRAP_ADMIN_API_KEY}`. With no `SEARCHOS_API_KEY` in
+`.env`, the MCP container therefore runs *every* tool with the bootstrap admin
+key. For least privilege, put a minted user key in `.env` as
+`SEARCHOS_API_KEY`; the admin key is then used only for `ingest` and
+`cache_flush`.
 
 ### Authentication on the HTTP transports
 

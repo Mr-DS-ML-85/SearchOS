@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.logging import get_logger
 from app.metrics import get_metrics
 from app.schemas import SearchResult
-from app.search.base import ProviderQuery, ProviderResult, SearchProvider
+from app.search.base import ProviderQuery, ProviderResult, SearchProvider, domain_allowed
 
 SNIPPET_META_FLAG = "searxng_snippet"
 
@@ -41,8 +41,20 @@ class SearXNGProvider(SearchProvider):
                     return result
             except Exception:
                 pass
+        # The orchestrator strips `site:` out of the query text into
+        # query.domains. This provider used to send only the stripped text and
+        # never filter, so `site:arxiv.org ...` searched the whole web: pinned
+        # (sources=searxng) it returned unrelated domains, and through the
+        # cascade the domain filter then kept only whichever arxiv result
+        # happened to appear (often one). Send the restriction upstream, where
+        # the engines can search inside the domain, and re-apply it below.
+        upstream_q = query.q
+        if query.domains:
+            upstream_q += " " + " OR ".join(f"site:{d}" for d in query.domains)
+        for d in query.exclude_domains or []:
+            upstream_q += f" -site:{d}"
         params = {
-            "q": query.q,
+            "q": upstream_q,
             "format": "json",
             "safesearch": 0,
             "categories": "general",
@@ -68,7 +80,13 @@ class SearXNGProvider(SearchProvider):
             result.latency_ms = (time.monotonic() - start) * 1000
             return result
 
-        raw_results = payload.get("results") or []
+        # Not every engine honours `site:`; filter before the page slice so a
+        # dropped row does not cost a slot.
+        raw_results = [
+            item
+            for item in payload.get("results") or []
+            if item.get("url") and domain_allowed(item["url"], query.domains, query.exclude_domains)
+        ]
         for rank, item in enumerate(raw_results[: query.num_results], start=1):
             url = item.get("url") or ""
             if not url:

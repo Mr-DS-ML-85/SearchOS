@@ -18,7 +18,7 @@
   <a href="docs/assets/badges/docker.svg"><img src="docs/assets/badges/docker.svg" alt="Docker compose"/></a>
   <a href="docs/assets/badges/alembic.svg"><img src="docs/assets/badges/alembic.svg" alt="Alembic migrations"/></a>
   <a href="docs/assets/badges/grafana.svg"><img src="docs/assets/badges/grafana.svg" alt="Grafana metrics"/></a>
-  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 366 passed"/></a>
+  <a href="docs/assets/badges/ci.svg"><img src="docs/assets/badges/ci.svg" alt="Tests 367 passed"/></a>
   <a href="docs/assets/badges/license.svg"><img src="docs/assets/badges/license.svg" alt="MIT"/></a>
 </p>
 
@@ -155,6 +155,8 @@ SEARCHOS_API_KEY=sk_... python searchos_mcp.py --transport stdio
 # remote: Streamable HTTP (/mcp) + legacy SSE (/sse), stateless per 2026-07-28 spec
 SEARCHOS_API_KEY=sk_... python searchos_mcp.py --port 8099
 ```
+
+`SEARCHOS_API_KEY` (a `user`-role gateway key) is used by every read tool. Add `SEARCHOS_ADMIN_KEY` (an `admin` key) to enable `ingest` and `cache_flush`; without it those two tools return an error and the rest work. Under Docker Compose the MCP container falls back to the bootstrap **admin** key for both unless `.env` sets `SEARCHOS_API_KEY`. See [docs/mcp.md → API keys](docs/mcp.md#api-keys).
 
 Or run it as a container alongside the stack:
 
